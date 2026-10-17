@@ -247,6 +247,8 @@ int main(int argc, char* argv[])
             QCommandLineParser::tr("Print 3D Vision Qt paint/compose/swap and USB timing stats every 5 seconds.") });
     parser.addOption({ "nvstusb-dry-run",
             QCommandLineParser::tr("Measure alternating Qt frame lifecycle without opening the USB emitter.") });
+    parser.addOption({ "nvstusb-ignore-video-wakeups",
+            QCommandLineParser::tr("Diagnostic: ignore decoded-frame repaint signals once alternating playback is running (requires --nvstusb-dry-run).") });
     parser.process(app);
 
     // Initialize logging
@@ -798,7 +800,13 @@ int main(int argc, char* argv[])
             LOG_FATAL("bino: --nvstusb-dry-run requires --nvstusb");
             return 1;
         }
+        if (parser.isSet("nvstusb-ignore-video-wakeups")
+                && !parser.isSet("nvstusb-dry-run")) {
+            LOG_FATAL("bino: --nvstusb-ignore-video-wakeups requires --nvstusb-dry-run");
+            return 1;
+        }
         NvstusbController nvstusbController;
+        nvstusbController.setIgnoreVideoWakeups(parser.isSet("nvstusb-ignore-video-wakeups"));
         if (parser.isSet("nvstusb")) {
             if (outputMode != Output_Alternating) {
                 LOG_FATAL("bino: --nvstusb requires --output=alternating");
