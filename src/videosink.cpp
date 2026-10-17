@@ -195,8 +195,9 @@ void VideoSink::processNewFrame(const QVideoFrame& frame)
                                   frameCounter == 0, _asyncGeneration};
         ++frameCounter;
         if (_asyncBusy) {
+            if (_asyncPending)
+                ++_asyncSkipped; // an older not-yet-started frame is replaced
             _asyncPending = std::move(request);
-            ++_asyncSkipped;
         } else {
             dispatchAsyncFrame(std::move(request));
         }
