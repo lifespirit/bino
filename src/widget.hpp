@@ -44,6 +44,7 @@ private:
     int _alternatingLastView; // last view displayed in Mode_Alternating (0 or 1)
     NvstusbController* _nvstusb;
     int _nvstusbRenderedEye = -1; // view captured during paintGL, before toggle
+    bool _nvstusbAlternatingActive = false; // a stereo paint has begun scheduling the next paint
 
     bool _inOverlayUIEvent;
     float _surroundVerticalFOVDefault;
