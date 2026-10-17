@@ -26,16 +26,21 @@ public:
     ~NvstusbController() override;
 
     bool start(const QString& firmware, float rate, int phaseMs, bool invert,
-               Trigger trigger, bool stats);
+               Trigger trigger, bool stats, bool dryRun);
     bool enabled() const;
     bool beforeComposition() const;
     void onFrameReady(int eye);
+    void onFramePainted(int eye);
+    void onQtComposing();
+    void onQtSwapped();
 
 private:
     void sendPendingEye();
     void reportStatsIfDue(qint64 now);
 
     nvstusb_context* _ctx = nullptr;
+    bool _active = false;
+    bool _dryRun = false;
     QTimer _phaseTimer;
     int _phaseMs = 0;
     int _pendingEye = -1;
@@ -56,4 +61,18 @@ private:
     int _replacedCommands = 0;
     int _lastEye = -1;
     int _sameEyeCount = 0;
+
+    // Counts are observed Qt events, not compositor presentation feedback.
+    int _paintCount = 0;
+    int _composeCount = 0;
+    int _swapCount = 0;
+    int _paintsSinceCompose = 0;
+    int _compositionsWithoutPaint = 0;
+    int _coalescedPaints = 0;
+    int _samePaintEyeCount = 0;
+    int _lastPaintEye = -1;
+    qint64 _lastPaintNs = -1;
+    qint64 _paintIntervalsNs = 0;
+    qint64 _maxPaintIntervalNs = 0;
+    int _paintIntervalCount = 0;
 };
