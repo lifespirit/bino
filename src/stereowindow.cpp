@@ -58,6 +58,12 @@ StereoWindow::StereoWindow(OutputMode outputMode, float surroundVerticalFOV,
     _surroundVerticalFOVDefault = _surroundVerticalFOV; // to make sure clamping was applied
     // Direct EGL surface: schedule a new paint only after Qt swaps.
     connect(this, &QOpenGLWindow::frameSwapped, this, [this]() {
+        if (!_presentationInitialized) {
+            _presentationInitialized = true;
+            // Native wl_surface must exist before QtWayland winId() returns it.
+            // Do not perform wl_display_roundtrip recursively inside paintGL.
+            QTimer::singleShot(0, this, [this]() { _presentation.start(this); });
+        }
         if (_nvstusb) {
             if (_nvstusbRenderedEye >= 0) {
                 _nvstusb->onFrameReady(_nvstusbRenderedEye);
@@ -222,11 +228,6 @@ void StereoWindow::initializeGL()
 
     // Initialize Bino
     Bino::instance()->initProcess();
-
-    // Presentation feedback is observational in this iteration. The
-    // compositor supplies timestamps only after physical presentation.
-    // Never use a late event to switch the shutters retroactively.
-    _presentation.start(this);
 }
 
 void StereoWindow::rebuildDisplayPrgIfNecessary(OutputMode outputMode)
