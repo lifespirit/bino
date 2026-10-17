@@ -630,6 +630,9 @@ bool Bino::initProcess()
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, 1, 1,
             0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+    // initProcess() can be called again when a new OpenGL context is created.
+    _depthTexWidth = 1;
+    _depthTexHeight = 1;
     glBindFramebuffer(GL_FRAMEBUFFER, _viewFbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, _depthTex, 0);
     CHECK_GL();
