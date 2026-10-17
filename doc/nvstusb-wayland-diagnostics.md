@@ -677,3 +677,55 @@ QT_QPA_PLATFORM=wayland ./build/bino \
 Avoid active glasses until the renderer can sustain near 120 Hz
 **actual presentation**, then design explicit phase-locked IR
 scheduling and recovery for missed display slots.
+
+## Native A/B results and future-slot forecast experiment
+
+Three runs of ~30 seconds each isolated frame pacing from the
+optional presentation observer:
+
+| Native mode | Steady 5-second windows | Avg steady Qt paint | Late Qt callbacks after warmup |
+|---|---:|---:|---:|
+| `BINO_NATIVE_FEEDBACK=0 BINO_NATIVE_PACING=swap` | 5 | 119.08 Hz | 22 |
+| `BINO_NATIVE_FEEDBACK=1 BINO_NATIVE_PACING=swap` | 5 | 118.48 Hz | 33 |
+| `BINO_NATIVE_FEEDBACK=1 BINO_NATIVE_PACING=paint` | 5 | 119.04 Hz | 23 |
+
+The original unexplained ~60Hz native-v2 regression did **not**
+reproduce. It is not justified to attribute that slowdown to
+`wp_presentation` itself. All A/B runs still missed compositor
+refresh cycles. KWin's actual `seq` remained zero in all 3600
+observed feedback events in both observer-enabled A/B runs.
+The `swap` observer run reported 43 timestamp-inferred missed
+refresh periods and 31 displayed-eye parity inconsistencies
+over 3600 presentations (39/29 respectively after excluding the
+first startup report); `paint` reported 115 and 111 including
+startup (25 and 23 respectively without startup). These cannot
+be corrected merely by swapping when Qt `frameSwapped` fires.
+
+**Next diagnostic:** after each 600 compositor reports,
+`bino: wayland-forecast` now prints prediction accuracy for
+candidate **pre-submission → presentation** leads
+8, 12, 16, 20, 24, and 32 ms, including `parity_ok_pct`,
+`exact_pct`, and `abs_slot_err_avg`. Each per-buffer
+prediction is made from the last *already confirmed* physical
+presentation time and KWin's 8.333ms reported refresh period,
+then compared after the true compositor timestamp becomes
+available. This is intentionally a **shadow-mode predictor**:
+it does not alter the rendered eye, QOpenGLWindow pacing, or
+real/dry-run USB commands. Forecast comparisons are only
+made with recent monotonic timestamp anchors; unavailable
+anchors are excluded from the sample counts.
+
+Testing protocol: keep `BINO_NATIVE_FEEDBACK=1`,
+`BINO_NATIVE_PACING=swap`, `BINO_ASYNC_VIDEO_MAP=1`,
+`--nvstusb-native-window --nvstusb-dry-run --nvstusb-stats`.
+Collect a 30-60 second log and examine whether *any* lead
+predicts the correct actual display-slot parity near 100%
+on a sustained basis. If none does, phase-based control
+from client-side timestamps alone is not reliable enough
+for glasses and should remain disabled. In that case,
+physical vblank access/exclusive fullscreen presentation
+or compositor cooperation is necessary to prevent
+mismatched shutter and displayed-eye states.
+
+Do not use active glasses while the actual KWin
+presentation stream still skips refresh cycles.
