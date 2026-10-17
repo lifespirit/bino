@@ -244,7 +244,9 @@ int main(int argc, char* argv[])
             QCommandLineParser::tr("USB shutter trigger: swap (default) or compose."),
             "mode", "swap" });
     parser.addOption({ "nvstusb-stats",
-            QCommandLineParser::tr("Print NVIDIA 3D Vision callback and USB timing stats every 5 seconds.") });
+            QCommandLineParser::tr("Print 3D Vision Qt paint/compose/swap and USB timing stats every 5 seconds.") });
+    parser.addOption({ "nvstusb-dry-run",
+            QCommandLineParser::tr("Measure alternating Qt frame lifecycle without opening the USB emitter.") });
     parser.process(app);
 
     // Initialize logging
@@ -792,6 +794,10 @@ int main(int argc, char* argv[])
                 outputMode = om;
         }
         // Initialize the optional USB emitter only in alternating GUI output mode.
+        if (parser.isSet("nvstusb-dry-run") && !parser.isSet("nvstusb")) {
+            LOG_FATAL("bino: --nvstusb-dry-run requires --nvstusb");
+            return 1;
+        }
         NvstusbController nvstusbController;
         if (parser.isSet("nvstusb")) {
             if (outputMode != Output_Alternating) {
@@ -816,7 +822,8 @@ int main(int argc, char* argv[])
                     ? NvstusbController::Trigger::Compose : NvstusbController::Trigger::Swap;
             if (!nvstusbController.start(parser.value("nvstusb-firmware"), rate,
                         phaseMs, parser.isSet("nvstusb-invert"), trigger,
-                        parser.isSet("nvstusb-stats"))) {
+                        parser.isSet("nvstusb-stats"),
+                        parser.isSet("nvstusb-dry-run"))) {
                 LOG_FATAL("bino: failed to initialize NVIDIA 3D Vision emitter");
                 return 1;
             }
