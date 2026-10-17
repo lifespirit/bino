@@ -1314,10 +1314,17 @@ void Bino::render(
         // do nothing
         break;
     }
-    // Set up framebuffer object to render into
-    glBindTexture(GL_TEXTURE_2D, _depthTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, texWidth, texHeight,
-            0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+    // Set up framebuffer object to render into. Previously glTexImage2D()
+    // reallocated this large depth texture for every stereo eye, even when
+    // the dimensions were unchanged (up to 120+ allocations per second).
+    // Reallocate only when the output resolution actually changes.
+    if (_depthTexWidth != texWidth || _depthTexHeight != texHeight) {
+        glBindTexture(GL_TEXTURE_2D, _depthTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, texWidth, texHeight,
+                0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+        _depthTexWidth = texWidth;
+        _depthTexHeight = texHeight;
+    }
     glEnable(GL_DEPTH_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, _viewFbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
