@@ -241,7 +241,7 @@ void NvstusbController::sendPendingEye()
 #endif
 }
 
-void NvstusbController::reportStatsIfDue(
+void NvstusbController::reportStatsIfDue(qint64 now)
 {
     if (now - _windowStartNs < 5000000000LL)
         return;
