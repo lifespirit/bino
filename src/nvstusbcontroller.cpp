@@ -106,6 +106,14 @@ bool NvstusbController::start(const QString& firmware, float rate, int phaseMs,
     _paintIntervalsNs = 0;
     _maxPaintIntervalNs = 0;
     _paintIntervalCount = 0;
+    for (int i = 0; i < 2; ++i) {
+        _paintTypeCount[i] = 0;
+        _preRenderTypeTotalNs[i] = 0;
+        _preRenderTypeMaxNs[i] = 0;
+        _paintCpuTypeTotalNs[i] = 0;
+        _paintCpuTypeMaxNs[i] = 0;
+        _paintLateTypeCount[i] = 0;
+    }
 
     std::fprintf(stderr,
             "bino: nvstusb: %s at %.2f Hz, trigger %s, phase %d ms, "
@@ -128,19 +136,30 @@ bool NvstusbController::beforeComposition() const
     return _trigger == Trigger::Compose;
 }
 
-void NvstusbController::onFramePainted(int eye)
+void NvstusbController::onFramePainted(int eye, bool newVideoFrameUploaded,
+                                        qint64 preRenderNs, qint64 paintCpuNs)
 {
     if (!_active || !_stats || (eye != 0 && eye != 1))
         return;
     const qint64 now = _clock.nsecsElapsed();
+    const int type = newVideoFrameUploaded ? 1 : 0;
     ++_paintCount;
     ++_paintsSinceCompose;
+    ++_paintTypeCount[type];
+    _preRenderTypeTotalNs[type] += preRenderNs;
+    _paintCpuTypeTotalNs[type] += paintCpuNs;
+    if (preRenderNs > _preRenderTypeMaxNs[type])
+        _preRenderTypeMaxNs[type] = preRenderNs;
+    if (paintCpuNs > _paintCpuTypeMaxNs[type])
+        _paintCpuTypeMaxNs[type] = paintCpuNs;
     if (_lastPaintNs >= 0) {
         const qint64 delta = now - _lastPaintNs;
         _paintIntervalsNs += delta;
         ++_paintIntervalCount;
         if (delta > _maxPaintIntervalNs)
             _maxPaintIntervalNs = delta;
+        if (double(delta) > (1.5e9 / double(_rate)))
+            ++_paintLateTypeCount[type];
     }
     _lastPaintNs = now;
     if (_lastPaintEye == eye)
@@ -269,6 +288,14 @@ void NvstusbController::reportStatsIfDue(qint64 now)
     const double swapHz = elapsed > 0.0 ? double(_swapCount) / elapsed : 0.0;
     const double paintAvgMs = _paintIntervalCount > 0
             ? double(_paintIntervalsNs) / double(_paintIntervalCount) / 1e6 : 0.0;
+    const double preNewAvgMs = _paintTypeCount[1]
+            ? double(_preRenderTypeTotalNs[1]) / _paintTypeCount[1] / 1e6 : 0.0;
+    const double preCachedAvgMs = _paintTypeCount[0]
+            ? double(_preRenderTypeTotalNs[0]) / _paintTypeCount[0] / 1e6 : 0.0;
+    const double paintNewAvgMs = _paintTypeCount[1]
+            ? double(_paintCpuTypeTotalNs[1]) / _paintTypeCount[1] / 1e6 : 0.0;
+    const double paintCachedAvgMs = _paintTypeCount[0]
+            ? double(_paintCpuTypeTotalNs[0]) / _paintTypeCount[0] / 1e6 : 0.0;
     const double gapToLeftMs = _gapToEyeCount[0]
             ? double(_gapToEyeNs[0]) / _gapToEyeCount[0] / 1e6 : 0.0;
     const double gapToRightMs = _gapToEyeCount[1]
@@ -282,7 +309,13 @@ void NvstusbController::reportStatsIfDue(qint64 now)
             "late=%d same_eye=%d) commands=%d usb_max=%.2fms replaced=%d "
             "RtoL_avg=%.2fms RtoL_max=%.2fms "
             "LtoR_avg=%.2fms LtoR_max=%.2fms "
-            "usb_left_max=%.2fms usb_right_max=%.2fms\n",
+            "usb_left_max=%.2fms usb_right_max=%.2fms "
+            "video_new=%d video_cached=%d "
+            "pre_new_avg=%.2fms pre_new_max=%.2fms "
+            "pre_cached_avg=%.2fms pre_cached_max=%.2fms "
+            "paint_new_avg=%.2fms paint_new_max=%.2fms "
+            "paint_cached_avg=%.2fms paint_cached_max=%.2fms "
+            "paint_late_new=%d paint_late_cached=%d\n",
             _trigger == Trigger::Compose ? "compose" : "swap",
             _dryRun ? "/dry-run" : "",
             _paintCount, paintHz, paintAvgMs, double(_maxPaintIntervalNs) / 1e6,
@@ -293,7 +326,13 @@ void NvstusbController::reportStatsIfDue(qint64 now)
             _usbCommandCount, double(_maxUsbNs) / 1e6, _replacedCommands,
             gapToLeftMs, double(_gapToEyeMaxNs[0]) / 1e6,
             gapToRightMs, double(_gapToEyeMaxNs[1]) / 1e6,
-            double(_usbByEyeMaxNs[0]) / 1e6, double(_usbByEyeMaxNs[1]) / 1e6);
+            double(_usbByEyeMaxNs[0]) / 1e6, double(_usbByEyeMaxNs[1]) / 1e6,
+            _paintTypeCount[1], _paintTypeCount[0],
+            preNewAvgMs, double(_preRenderTypeMaxNs[1]) / 1e6,
+            preCachedAvgMs, double(_preRenderTypeMaxNs[0]) / 1e6,
+            paintNewAvgMs, double(_paintCpuTypeMaxNs[1]) / 1e6,
+            paintCachedAvgMs, double(_paintCpuTypeMaxNs[0]) / 1e6,
+            _paintLateTypeCount[1], _paintLateTypeCount[0]);
 
     _windowStartNs = now;
     _callbackCount = 0;
@@ -320,4 +359,12 @@ void NvstusbController::reportStatsIfDue(qint64 now)
     _paintIntervalsNs = 0;
     _maxPaintIntervalNs = 0;
     _paintIntervalCount = 0;
+    for (int i = 0; i < 2; ++i) {
+        _paintTypeCount[i] = 0;
+        _preRenderTypeTotalNs[i] = 0;
+        _preRenderTypeMaxNs[i] = 0;
+        _paintCpuTypeTotalNs[i] = 0;
+        _paintCpuTypeMaxNs[i] = 0;
+        _paintLateTypeCount[i] = 0;
+    }
 }
