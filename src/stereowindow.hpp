@@ -1,0 +1,93 @@
+/*
+ * This file is part of Bino, a 3D video player.
+ *
+ * Copyright (C) 2022, 2023, 2024, 2025, 2026
+ * Martin Lambers <marlam@marlam.de>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <QOpenGLWindow>
+#include <QOpenGLExtraFunctions>
+#include <QTimer>
+
+#include "modes.hpp"
+#include "bino.hpp"
+
+
+class NvstusbController;
+
+class StereoWindow : public QOpenGLWindow, protected QOpenGLExtraFunctions
+{
+Q_OBJECT
+
+private:
+    QTimer _updateTimer;
+    int _width = 1, _height = 1;
+    float _lastFrameRelWidth, _lastFrameRelHeight;
+
+    OutputMode _outputMode;
+    int _alternatingLastView; // last view displayed in Mode_Alternating (0 or 1)
+    NvstusbController* _nvstusb;
+    int _nvstusbRenderedEye = -1; // view captured during paintGL, before toggle
+    bool _nvstusbAlternatingActive = false; // a stereo paint has begun scheduling the next paint
+
+    bool _inOverlayUIEvent;
+    float _surroundVerticalFOVDefault;
+    float _surroundVerticalFOV;
+    bool _inSurroundMovement;
+    QPointF _surroundMovementStart;
+    float _surroundHorizontalAngleBase;
+    float _surroundVerticalAngleBase;
+    float _surroundHorizontalAngleCurrent;
+    float _surroundVerticalAngleCurrent;
+    QMatrix4x4 _surroundProjectionMatrix;
+
+    unsigned int _viewTex[2];
+    int _viewTexWidth[2], _viewTexHeight[2];
+    unsigned int _quadVao;
+    QOpenGLShaderProgram _displayPrg;
+    int _displayPrgOutputMode;
+
+    void rebuildDisplayPrgIfNecessary(OutputMode outputMode);
+    QPointF toView(const QPointF& pos) const;
+
+public:
+    StereoWindow(OutputMode outputMode, float surroundVerticalFOV,
+            NvstusbController* nvstusb = nullptr);
+
+    bool isOpenGLStereo() const;
+    OutputMode outputMode() const;
+    void setOutputMode(OutputMode mode);
+    void setSurroundVerticalFieldOfView(float vfov);
+    void resetSurroundView();
+
+    virtual void initializeGL() override;
+    virtual void paintGL() override;
+    virtual void resizeGL(int w, int h) override;
+
+    virtual void keyPressEvent(QKeyEvent* e) override;
+    virtual void mousePressEvent(QMouseEvent* e) override;
+    virtual void mouseReleaseEvent(QMouseEvent* e) override;
+    virtual void mouseMoveEvent(QMouseEvent* e) override;
+    virtual void wheelEvent(QWheelEvent* e) override;
+
+public slots:
+    void mediaChanged(PlaylistEntry entry);
+
+signals:
+    void toggleFullscreen();
+};
