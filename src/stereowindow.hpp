@@ -39,6 +39,8 @@ private:
     QTimer _updateTimer;
     PresentationTracker _presentation;
     bool _presentationInitialized = false;
+    bool _enablePresentation = true;  // A/B diagnostic (native mode only)
+    bool _pacingAfterPaint = false;   // A/B diagnostic (native mode only)
     int _width = 1, _height = 1;
     float _lastFrameRelWidth, _lastFrameRelHeight;
 
