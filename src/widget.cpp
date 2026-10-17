@@ -69,13 +69,19 @@ Widget::Widget(OutputMode outputMode, float surroundVerticalFOV,
     };
     connect(this, &QOpenGLWidget::aboutToCompose, this,
             [this, sendRenderedEye]() {
-                if (_nvstusb && _nvstusb->beforeComposition())
-                    sendRenderedEye();
+                if (_nvstusb) {
+                    _nvstusb->onQtComposing();
+                    if (_nvstusb->beforeComposition())
+                        sendRenderedEye();
+                }
             });
     connect(this, &QOpenGLWidget::frameSwapped, this,
             [this, sendRenderedEye]() {
-                if (_nvstusb && !_nvstusb->beforeComposition())
-                    sendRenderedEye();
+                if (_nvstusb) {
+                    if (!_nvstusb->beforeComposition())
+                        sendRenderedEye();
+                    _nvstusb->onQtSwapped();
+                }
             });
     setMouseTracking(true);
     setMinimumSize(8, 8);
@@ -435,6 +441,11 @@ void Widget::paintGL()
         _displayPrg.setUniformValue("outputModeLeftRightView", outputMode == Output_Left ? 0 : 1);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
     }
+
+    // Record the eye actually rendered, independently of Qt composition.
+    // This is a diagnostic observation, NOT a Wayland presentation event.
+    if (_nvstusb && _nvstusbRenderedEye >= 0)
+        _nvstusb->onFramePainted(_nvstusbRenderedEye);
 
     // Update Output_Alternating
     if (_outputMode == Output_Alternating && frameIsStereo) {
