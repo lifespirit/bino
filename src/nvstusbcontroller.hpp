@@ -28,6 +28,8 @@ public:
     bool start(const QString& firmware, float rate, int phaseMs, bool invert,
                Trigger trigger, bool stats, bool dryRun);
     bool enabled() const;
+    void setIgnoreVideoWakeups(bool enabled) { _ignoreVideoWakeups = enabled; }
+    bool ignoreVideoWakeups() const { return _ignoreVideoWakeups; }
     bool beforeComposition() const;
     void onFrameReady(int eye);
     void onFramePainted(int eye, bool newVideoFrameUploaded,
@@ -42,6 +44,7 @@ private:
     nvstusb_context* _ctx = nullptr;
     bool _active = false;
     bool _dryRun = false;
+    bool _ignoreVideoWakeups = false; // dry-run-only Qt scheduling experiment
     QTimer _phaseTimer;
     int _phaseMs = 0;
     int _pendingEye = -1;
