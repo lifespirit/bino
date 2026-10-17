@@ -450,3 +450,85 @@ source. Account explicitly for discarded or repeated frames rather
 than toggling an eye on each `paintGL()`. A native fullscreen
 QOpenGLWindow avoids QOpenGLWidget's extra QWidget composition, but
 it alone does not provide physical presentation confirmation.
+
+## Native fullscreen test: direct EGL surface and Wayland presentation feedback
+
+After the QOpenGLWidget experiments, `kscreen-doctor -o` confirmed
+**DP-1, 2560x1440 at exactly 120.00 Hz** with KWin reporting
+**`Vrr: incapable`**. A `QOpenGLWidget::NoPartialUpdate` dry run
+averaged ~118.6 Hz and still showed 122 late Qt callback intervals
+across 22 measurement windows. It did not improve the problem.
+
+The next experimental output is a **standalone native
+`QOpenGLWindow`**. It retains Bino's color conversion, stereo
+shaders, player controls and asynchronously mapped movie frames,
+but renders directly to the EGL surface without the intermediate
+`QOpenGLWidget` composition framebuffer. Its alternating loop
+schedules the next update from the native `frameSwapped` signal,
+not from `paintGL`. Normal `Gui`/`Widget` mode remains unchanged.
+
+First build and test **without opening the USB device and without
+wearing the glasses**:
+
+```sh
+cd ~/Projects/src/bino-nvstusb
+git pull --ff-only origin main
+cmake -S . -B build
+cmake --build build -j"$(nproc)"
+
+BINO_ASYNC_VIDEO_MAP=1 QT_QPA_PLATFORM=wayland ./build/bino \
+  --input=left-right-half --output=alternating --fullscreen \
+  --nvstusb --nvstusb-native-window --nvstusb-dry-run --nvstusb-stats \
+  "$HOME/Веном_Venom (2018) BDRip.Half-SBS.1080p.NNMClub.mkv" \
+  2>&1 | tee /tmp/bino-native-dry.log
+```
+
+`Escape` closes the native video window. The main menu and ordinary
+QWidget toolbars are not present in this experimental fullscreen mode.
+Basic Bino keyboard shortcuts for playback, seeking and eye swapping
+remain available.
+
+When building on Linux with **Qt >= 6.9**, `wayland-client`,
+`wayland-scanner` and the `presentation-time.xml` from
+`wayland-protocols`, CMake automatically generates the native
+`wp_presentation` client protocol. Search for the build output
+`Experimental Wayland wp_presentation feedback: YES`.
+The code uses QtWayland 6.9+'s `QWindow::winId()` semantics
+(the returned identifier points at `wl_surface`). It uses the
+native `QWaylandApplication` interface for the same Wayland
+connection as Qt. On older Qt or other window systems, presentation
+feedback is disabled, while the native window can still run.
+
+When supported by KWin, the experiment prints
+`bino: wayland-presentation stats:` after 600 compositor replies,
+containing:
+
+- `presented`: content updates confirmed as visible
+- `discarded`: submitted updates that the compositor did not show
+- `skipped_vblanks`: gaps in actual compositor presentation sequence
+- `eye_parity_errors`: changes of eye inconsistent with presentation
+  sequence parity across successive *presented* movie frames
+- `refresh`: compositor reported refresh period (not app scheduling)
+- `feedback_avg`: delivery latency from feedback request to callback
+  (not the actual presentation latency)
+- `pending` and `feedback_overflow`: outstanding responses/diagnostics.
+
+Wayland feedback is sent **after actual presentation**; it cannot
+in itself trigger the shutter in time for the just-presented frame.
+This initial implementation records the samples only. The USB
+still uses the Qt native `frameSwapped` event, and true optical
+phase correction is **not yet enabled**. Once native timing and
+KWin sequence data are observed, a separately gated predictor
+and dropped-frame recovery strategy can be tested.
+
+**Important safety note:** the existing right-lens flicker produces
+significant visual discomfort. Do not try to assess long intervals
+by wearing the glasses. Benchmark with `--nvstusb-dry-run` first
+and inspect the feedback/late counters. Hardware validation,
+if warranted, should be brief and stopped immediately if
+flicker persists.
+
+The native window and protocol client have not been compiled on the
+target Arch machine in this iteration. Compile errors, lack of
+`wp_presentation` support, black video, or KWin-specific timing
+behavior need to be checked with its first dry-run log.
