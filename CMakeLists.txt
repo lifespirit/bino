@@ -10,7 +10,7 @@ set(CMAKE_FIND_PACKAGE_SORT_ORDER NATURAL)
 set(CMAKE_FIND_PACKAGE_SORT_DIRECTION DEC)
 set(CMAKE_AUTOMOC ON)
 
-project(Bino LANGUAGES CXX)
+project(Bino LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
@@ -49,6 +49,35 @@ if(QVR_FOUND)
     link_directories(${QVR_LIBRARY_DIRS})
 endif()
 
+# Optional native Wayland presentation timestamps. The source also builds
+# without the protocol so existing non-Linux and older Qt builds stay intact.
+option(ENABLE_WAYLAND_PRESENTATION "Observe real Wayland presentation timings (QtWayland >= 6.9)" ON)
+if(ENABLE_WAYLAND_PRESENTATION AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+        AND Qt6_VERSION VERSION_GREATER_EQUAL "6.9.0")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(WAYLAND_CLIENT QUIET IMPORTED_TARGET wayland-client)
+    endif()
+    find_program(WAYLAND_SCANNER_EXECUTABLE NAMES wayland-scanner)
+    find_file(WAYLAND_PRESENTATION_XML NAMES presentation-time.xml
+        HINTS /usr/share/wayland-protocols/stable/presentation-time
+              /usr/local/share/wayland-protocols/stable/presentation-time)
+    if(TARGET PkgConfig::WAYLAND_CLIENT AND WAYLAND_SCANNER_EXECUTABLE
+            AND WAYLAND_PRESENTATION_XML)
+        set(WAYLAND_PRESENTATION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/presentation-time-client-protocol.h")
+        set(WAYLAND_PRESENTATION_CODE "${CMAKE_CURRENT_BINARY_DIR}/presentation-time-protocol.c")
+        add_custom_command(
+            OUTPUT "${WAYLAND_PRESENTATION_HEADER}" "${WAYLAND_PRESENTATION_CODE}"
+            COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header
+                "${WAYLAND_PRESENTATION_XML}" "${WAYLAND_PRESENTATION_HEADER}"
+            COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code
+                "${WAYLAND_PRESENTATION_XML}" "${WAYLAND_PRESENTATION_CODE}"
+            DEPENDS "${WAYLAND_PRESENTATION_XML}"
+            VERBATIM)
+        set(HAVE_WAYLAND_PRESENTATION TRUE)
+    endif()
+endif()
+
 # The executable
 add_executable(bino
 	src/main.cpp src/version.hpp
@@ -64,6 +93,7 @@ add_executable(bino
 	src/qvrapp.hpp src/qvrapp.cpp
 	src/widget.hpp src/widget.cpp
 	src/stereowindow.hpp src/stereowindow.cpp
+	src/waylandpresentation.hpp src/waylandpresentation.cpp
 	src/nvstusbcontroller.hpp src/nvstusbcontroller.cpp
 	src/commandinterpreter.hpp src/commandinterpreter.cpp
 	src/playlisteditor.hpp src/playlisteditor.cpp
@@ -90,6 +120,15 @@ qt6_add_resources(bino "misc" PREFIX "/" FILES
 	res/bino-fallback-frame.png)
 set_target_properties(bino PROPERTIES WIN32_EXECUTABLE TRUE)
 target_link_libraries(bino PRIVATE Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Multimedia ${QVR_LIBRARIES})
+if(HAVE_WAYLAND_PRESENTATION)
+    target_sources(bino PRIVATE "${WAYLAND_PRESENTATION_CODE}" "${WAYLAND_PRESENTATION_HEADER}")
+    target_include_directories(bino PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    target_compile_definitions(bino PRIVATE WITH_WAYLAND_PRESENTATION)
+    target_link_libraries(bino PRIVATE PkgConfig::WAYLAND_CLIENT)
+    message(STATUS "Experimental Wayland wp_presentation feedback: YES")
+else()
+    message(STATUS "Experimental Wayland wp_presentation feedback: NO")
+endif()
 if(ENABLE_NVSTUSB)
     target_compile_definitions(bino PRIVATE WITH_NVSTUSB)
     if(NVSTUSB_SOURCE_DIR)
