@@ -56,14 +56,27 @@ StereoWindow::StereoWindow(OutputMode outputMode, float surroundVerticalFOV,
 {
     setSurroundVerticalFieldOfView(surroundVerticalFOV);
     _surroundVerticalFOVDefault = _surroundVerticalFOV; // to make sure clamping was applied
+    // A/B isolation of compositor presentation feedback and render scheduling.
+    // All switches affect only the experimental native window, never QWidget.
+    _enablePresentation = !(qEnvironmentVariableIsSet("BINO_NATIVE_FEEDBACK")
+            && qEnvironmentVariableIntValue("BINO_NATIVE_FEEDBACK") == 0);
+    const QByteArray pacing = qgetenv("BINO_NATIVE_PACING");
+    _pacingAfterPaint = (pacing == "paint");
+    if (!pacing.isEmpty() && pacing != "paint" && pacing != "swap")
+        std::fprintf(stderr, "bino: native pacing: unknown value '%s'; using swap\n",
+                     pacing.constData());
+    std::fprintf(stderr, "bino: native diagnostics: pacing=%s presentation_feedback=%s\n",
+                 _pacingAfterPaint ? "paint" : "swap",
+                 _enablePresentation ? "on" : "off");
     // Direct EGL surface: schedule a new paint only after Qt swaps.
     connect(this, &QOpenGLWindow::frameSwapped, this, [this]() {
-        _presentation.afterSwap();
-        if (!_presentationInitialized) {
-            _presentationInitialized = true;
-            // Native wl_surface must exist before QtWayland winId() returns it.
-            // Do not perform wl_display_roundtrip recursively inside paintGL.
-            QTimer::singleShot(0, this, [this]() { _presentation.start(this); });
+        if (_enablePresentation) {
+            _presentation.afterSwap();
+            if (!_presentationInitialized) {
+                _presentationInitialized = true;
+                // Never perform wl_display_roundtrip inside paintGL.
+                QTimer::singleShot(0, this, [this]() { _presentation.start(this); });
+            }
         }
         if (_nvstusb) {
             if (_nvstusbRenderedEye >= 0) {
@@ -72,7 +85,7 @@ StereoWindow::StereoWindow(OutputMode outputMode, float surroundVerticalFOV,
             }
             _nvstusb->onQtSwapped();
         }
-        if (_nvstusbAlternatingActive && isExposed())
+        if (_nvstusbAlternatingActive && isExposed() && !_pacingAfterPaint)
             update();
     });
     connect(Bino::instance(), &Bino::newVideoFrame, this, [this]() {
@@ -441,9 +454,14 @@ void StereoWindow::paintGL()
         _nvstusb->onFramePainted(_nvstusbRenderedEye, newVideoFrameUploaded,
                                  preRenderNs, paintTimer.nsecsElapsed());
 
-    // The frameSwapped callback schedules the next alternating paint.
-    if (_outputMode == Output_Alternating && frameIsStereo)
+    // Default: Qt's documented swap-driven pace. Diagnostic alternative:
+    // request the next paint while the current draw is being submitted.
+    // This is not presentation-aware and must NOT be used for real glasses.
+    if (_outputMode == Output_Alternating && frameIsStereo) {
         _alternatingLastView = (_alternatingLastView == 0 ? 1 : 0);
+        if (_pacingAfterPaint)
+            update();
+    }
 
     if (!_nvstusbAlternatingActive)
         _updateTimer.start(40);
