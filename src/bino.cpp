@@ -1170,8 +1170,11 @@ void Bino::overlayToTexture(const QImage& img, unsigned int tex)
 }
 
 void Bino::preRenderProcess(int screenWidth, int screenHeight,
-        int* viewCountPtr, int* viewWidthPtr, int* viewHeightPtr, float* frameDisplayAspectRatioPtr, bool* surroundPtr)
+        int* viewCountPtr, int* viewWidthPtr, int* viewHeightPtr,
+        float* frameDisplayAspectRatioPtr, bool* surroundPtr, bool* newVideoFrameUploaded)
 {
+    if (newVideoFrameUploaded)
+        *newVideoFrameUploaded = _frameIsNew;
     int viewCount = 2;
     int viewWidth = _frame.width;
     int viewHeight = _frame.height;
