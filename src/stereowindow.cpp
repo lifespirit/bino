@@ -58,6 +58,7 @@ StereoWindow::StereoWindow(OutputMode outputMode, float surroundVerticalFOV,
     _surroundVerticalFOVDefault = _surroundVerticalFOV; // to make sure clamping was applied
     // Direct EGL surface: schedule a new paint only after Qt swaps.
     connect(this, &QOpenGLWindow::frameSwapped, this, [this]() {
+        _presentation.afterSwap();
         if (!_presentationInitialized) {
             _presentationInitialized = true;
             // Native wl_surface must exist before QtWayland winId() returns it.
