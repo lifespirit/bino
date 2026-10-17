@@ -21,6 +21,8 @@
 #pragma once
 
 #include <QVideoSink>
+#include <QThread>
+#include <optional>
 
 #include "modes.hpp"
 #include "videoframe.hpp"
@@ -43,6 +45,7 @@ public:
     bool lastFrameWasValid; // last frame of current media was valid
 
     VideoSink(VideoFrame* frame, VideoFrame* extFrame, bool* frameIsNew);
+    ~VideoSink() override;
 
     void newPlaylistEntry(const PlaylistEntry& entry, const MetaData& metaData);
 
@@ -53,6 +56,25 @@ signals:
     void newVideoFrame();
 
 private:
+    // A bounded, latest-frame-only worker used only with BINO_ASYNC_VIDEO_MAP=1.
+    // Only the GUI thread reads/writes the currently displayed VideoFrame.
+    struct AsyncFrameRequest {
+        QVideoFrame frame;
+        InputMode inputMode;
+        SurroundMode surroundMode;
+        bool newSource;
+        quint64 generation;
+    };
+    void dispatchAsyncFrame(AsyncFrameRequest request);
+    bool _asyncMap = false;
+    QThread _asyncThread;
+    QObject* _asyncWorker = nullptr; // owned by _asyncThread, deleted on finished()
+    bool _asyncBusy = false;
+    std::optional<AsyncFrameRequest> _asyncPending;
+    quint64 _asyncGeneration = 0;
+    quint64 _asyncSkipped = 0;
+    quint64 _asyncDelivered = 0;
+
     // Optional wall-clock profiling of the videoFrameChanged handler.
     // This runs before the next paintGL(), so its time is not included
     // in the existing Bino/NVSTUSB paint timing measurements.
