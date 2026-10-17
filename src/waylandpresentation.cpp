@@ -36,6 +36,7 @@ struct PresentationTracker::Impl
     bool haveSequence = false;
     uint64_t presented = 0, discarded = 0, skippedVblanks = 0, parityErrors = 0;
     uint64_t feedbackSamples = 0, feedbackLatencyNs = 0;
+    uint64_t feedbackOverflow = 0;
     uint32_t lastRefreshNs = 0;
 
     static void global(void* data, wl_registry* registry, uint32_t name,
@@ -102,17 +103,19 @@ struct PresentationTracker::Impl
             std::fprintf(stderr,
                     "bino: wayland-presentation stats: presented=%llu discarded=%llu "
                     "skipped_vblanks=%llu eye_parity_errors=%llu "
-                    "pending=%zu refresh=%.3fms feedback_avg=%.3fms "
-                    "clock_id=%d\n",
+                    "pending=%zu feedback_overflow=%llu refresh=%.3fms "
+                    "feedback_avg=%.3fms clock_id=%d\n",
                     (unsigned long long)presented,
                     (unsigned long long)discarded,
                     (unsigned long long)skippedVblanks,
                     (unsigned long long)parityErrors,
-                    pending.size(), double(lastRefreshNs) / 1e6,
+                    pending.size(), (unsigned long long)feedbackOverflow,
+                    double(lastRefreshNs) / 1e6,
                     feedbackSamples ? double(feedbackLatencyNs) / feedbackSamples / 1e6 : 0.,
                     presentationClockId);
             presented = discarded = skippedVblanks = parityErrors = 0;
             feedbackSamples = feedbackLatencyNs = 0;
+            feedbackOverflow = 0;
         }
     }
     bool initialize(QWindow* window)
@@ -144,6 +147,16 @@ struct PresentationTracker::Impl
     {
         if (!presentation || !surface || eye < 0 || eye > 1)
             return;
+        // Bound memory if compositor feedback stalls or disappears.
+        if (pending.size() >= 16) {
+            ++feedbackOverflow;
+            if (feedbackOverflow == 1 || feedbackOverflow % 600 == 0)
+                std::fprintf(stderr,
+                        "bino: wayland-presentation: no feedback, pending=%zu; "
+                        "skipping request (overflow=%llu)\n",
+                        pending.size(), (unsigned long long)feedbackOverflow);
+            return;
+        }
         auto* feedback = wp_presentation_feedback(presentation, surface);
         if (!feedback)
             return;
