@@ -540,3 +540,65 @@ The native window and protocol client have not been compiled on the
 target Arch machine in this iteration. Compile errors, lack of
 `wp_presentation` support, black video, or KWin-specific timing
 behavior need to be checked with its first dry-run log.
+
+## Native v1 outcome: KWin confirms missed physical refresh periods
+
+The first native QOpenGLWindow run compiled on Arch, with
+`Experimental Wayland wp_presentation feedback: YES`.
+The Wayland protocol bound successfully, with `clock_id=1`
+(`CLOCK_MONOTONIC`) and `refresh=8.333ms`, confirming that
+KWin's native surface feedback is observable.
+
+Across 22 reporting windows (~110s):
+- Qt callback rate **117.50Hz** overall due to slow initial window
+  startup; **118.55Hz** over the 21 steady windows.
+- **245 Qt callback gaps >12.5ms**, including initial startup
+  delays, and max callback gap **46.22ms**.
+- `wp_presentation` delivered **13,199 presented** notifications and
+  **one discarded**. The greatest confirmed interval between
+  successive actual presentations was **25.005ms** -- three
+  physical refresh periods, i.e. two updates of this surface were
+  missed. Many others are around 16.67ms (one missed refresh).
+- Feedback arrived around **4.25ms after** the compositor's
+  presentation timestamp, averaged over 22 windows.
+- The request-to-feedback delay averaged **~25ms** in steady
+  windows, reflecting presentation queueing plus callback delivery,
+  not just USB or paintGL time.
+- `skipped_vblanks=0` and `eye_parity_errors=0` in the initial
+  native version are **not trustworthy**: those counters depended
+  solely on nonzero compositor `seq`, and the callback did not
+  record whether KWin supplied usable sequence counters.
+
+This confirms a root cause that a pure Qt callback rate alone could
+not establish: KWin sometimes presents successive alternating-eye
+buffers **two or three display refresh periods apart**. Merely
+removing the QWidget framebuffer does not fix missed physical
+refreshes.
+
+### Instrumentation follow-up (no IR phase-control changes)
+
+The next revision reports the actual `seq_zero`/`seq_valid`
+availability and the `wp_presentation_feedback.kind` flags
+(`vsynced`, `hw_clock`, `hw_completion`, `zero_copy`).
+It derives `time_missed_refresh` and `time_eye_parity_errors`
+**independently of the MSC sequence**, by dividing successive
+presentation timestamp gaps by the compositor-reported
+`refresh` period. Gaps with more than 25% deviation from an
+integer number of periods are counted separately as
+`time_uncertain`, to avoid interpreting timing noise as a
+definite missed vblank. The predicted number of display cycles is
+reported as `time_cycles`.
+
+The new `swap_to_present_avg/max` measures delay between Qt
+`frameSwapped` and KWin's physical presentation timestamp *for
+the same submitted eye frame*. This is critical to measuring
+whether shutter commands from Qt swap callbacks are sent too
+early relative to corresponding physical images.
+
+The USB controller and eye-selection behavior have not changed;
+these additional metrics must be validated in another
+**dry-run-only** test before any shutter timing correction can be
+considered. The framebuffer may remain visible through a skipped
+refresh, so `time_eye_parity_errors` should not be interpreted as
+hardware shutter measurements; it is a diagnostic comparison
+against the expected alternating display-slot phase.
