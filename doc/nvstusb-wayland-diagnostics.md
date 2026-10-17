@@ -221,3 +221,41 @@ and a frame-accurate presentation mechanism before changing the
 libnvstusb firmware timings. Even if timing does not improve,
 Qt presentation timing must still be investigated before claiming
 that physical shutters are synchronized with the displayed eyes.
+
+## Finding from suppressed video wakeups (v4)
+
+With `--nvstusb-ignore-video-wakeups`, the Qt render loop still
+averaged **103.5 Hz**, with the same dips to approximately **97 Hz**.
+The controller counted 1556 suppressed video-frame-triggered repaint
+requests, matching 1557 video uploads. Thus suppressing the extra
+`Widget::update()` calls did not resolve the timing.
+
+The next question is whether Qt Multimedia's `VideoSink::processNewFrame()`
+blocks the GUI thread *before* `paintGL()`. That work was outside all
+earlier `paint_new_avg` measurements.
+
+The code now supports optional profiling without changing playback:
+
+```sh
+BINO_PROFILE_VIDEO_SINK=1 QT_QPA_PLATFORM=wayland ./build/bino \
+  --input=left-right-half --output=alternating --fullscreen \
+  --nvstusb --nvstusb-dry-run --nvstusb-stats \
+  --nvstusb-ignore-video-wakeups \
+  "/path/to/23.98fps-half-sbs.mkv" \
+  2>&1 | tee /tmp/bino-video-sink-profile.log
+```
+
+Every 120 decoder frames (roughly five seconds), a new
+`bino: video_sink stats` record reports the wall-clock duration of
+the `QVideoSink::videoFrameChanged` handler, including the call to
+`VideoFrame::update()` (`handler_avg`, `handler_max`,
+`handler_gt1ms`, `gt4ms`, `gt8ms`), plus the
+`VideoFrame::update()` stage alone (`update_avg`, `update_max`).
+
+If the handler is consistently short while the Qt render cadence
+is late, investigate scheduling between Qt's framebuffer-composition
+callbacks and the compositor/presentation feedback rather than assuming
+decoding or USB is the cause. If the handler regularly takes several
+milliseconds, investigate frame mapping/copying and Qt Multimedia
+thread affinity next. These are CPU wall-clock durations, not GPU
+timestamps.
