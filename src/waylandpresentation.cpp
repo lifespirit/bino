@@ -15,7 +15,7 @@
 #include <unordered_set>
 
 #if defined(WITH_WAYLAND_PRESENTATION) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-#include <QNativeInterface>
+// QNativeInterface::QWaylandApplication is declared by QGuiApplication.
 #include <wayland-client.h>
 #include "presentation-time-client-protocol.h"
 
