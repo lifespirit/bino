@@ -100,6 +100,7 @@ bool NvstusbController::start(const QString& firmware, float rate, int phaseMs,
     _paintsSinceCompose = 0;
     _compositionsWithoutPaint = 0;
     _coalescedPaints = 0;
+    _suppressedVideoWakeups = 0;
     _samePaintEyeCount = 0;
     _lastPaintEye = -1;
     _lastPaintNs = -1;
@@ -134,6 +135,12 @@ bool NvstusbController::enabled() const
 bool NvstusbController::beforeComposition() const
 {
     return _trigger == Trigger::Compose;
+}
+
+void NvstusbController::noteSuppressedVideoWakeup()
+{
+    if (_active && _stats)
+        ++_suppressedVideoWakeups;
 }
 
 void NvstusbController::onFramePainted(int eye, bool newVideoFrameUploaded,
@@ -305,6 +312,7 @@ void NvstusbController::reportStatsIfDue(qint64 now)
             "bino: nvstusb stats: trigger=%s%s "
             "paint=%d(%.1fHz avg=%.2fms max=%.2fms same_eye=%d) "
             "compose=%d(%.1fHz no_new_paint=%d coalesced=%d) "
+            "ignored_video_wakeups=%d "
             "swap=%d(%.1fHz) callbacks=%d(%.1fHz avg=%.2fms max=%.2fms "
             "late=%d same_eye=%d) commands=%d usb_max=%.2fms replaced=%d "
             "RtoL_avg=%.2fms RtoL_max=%.2fms "
@@ -321,7 +329,7 @@ void NvstusbController::reportStatsIfDue(qint64 now)
             _paintCount, paintHz, paintAvgMs, double(_maxPaintIntervalNs) / 1e6,
             _samePaintEyeCount, _composeCount, composeHz,
             _compositionsWithoutPaint, _coalescedPaints,
-            _swapCount, swapHz, _callbackCount, hz, avgDeltaMs,
+            _suppressedVideoWakeups, _swapCount, swapHz, _callbackCount, hz, avgDeltaMs,
             double(_maxDeltaNs) / 1e6, _lateCount, _sameEyeCount,
             _usbCommandCount, double(_maxUsbNs) / 1e6, _replacedCommands,
             gapToLeftMs, double(_gapToEyeMaxNs[0]) / 1e6,
@@ -355,6 +363,7 @@ void NvstusbController::reportStatsIfDue(qint64 now)
     _swapCount = 0;
     _compositionsWithoutPaint = 0;
     _coalescedPaints = 0;
+    _suppressedVideoWakeups = 0;
     _samePaintEyeCount = 0;
     _paintIntervalsNs = 0;
     _maxPaintIntervalNs = 0;
