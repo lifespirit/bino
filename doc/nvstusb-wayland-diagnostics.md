@@ -467,6 +467,10 @@ but renders directly to the EGL surface without the intermediate
 schedules the next update from the native `frameSwapped` signal,
 not from `paintGL`. Normal `Gui`/`Widget` mode remains unchanged.
 
+Native mode currently supports only the `swap` shutter trigger;
+`--nvstusb-trigger=compose` is deliberately rejected instead of
+silently changing the timing semantics.
+
 First build and test **without opening the USB device and without
 wearing the glasses**:
 
