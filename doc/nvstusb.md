@@ -124,6 +124,70 @@ A callback gap over 12.5 ms is logged as `late`, **not** a proven
 dropped display frame. Large `usb_max` means synchronous USB writes
 are blocking GUI processing. The phase delay is still approximate.
 
+
+## Observed timing on KDE Wayland, October 17, 2026
+
+The user confirmed **actual stereoscopic depth** with the original shutter
+glasses, with intermittent temporary loss of synchronization. The 120 Hz
+monitor and direct USB connection were used for both tests.
+
+From the initial five-second telemetry windows:
+
+| Trigger | Windows | Callbacks / s | Late callbacks / 5s | Largest interval | Longest USB OUT |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| compose | 12 (60 s) | 116.52 | 16.0 average | 26.63 ms | 0.36 ms |
+| swap | 6 (30 s) | 115.67 | 16.5 average | 25.55 ms | 0.32 ms |
+
+Both reported zero repeated-eye callbacks and zero replaced pending shutter
+commands. The subjective observation is that `compose` lost synchronization
+less often, but the objective callback rates are close. These metrics do
+**not** measure physical presentation timestamps, actual scanout, nor a
+precise count of dropped monitor refreshes.
+
+Bino's current alternating mode advances eye parity for each `paintGL()`.
+If one or more 120 Hz presentation opportunities are missed, the parity of
+the next *actual* scanout may not match that simple event counter. This is
+a likely hypothesis to investigate, not yet a demonstrated root cause.
+Improving parity recovery would require a refresh-clock or compositor-
+supplied presentation timeline.
+
+The source file used in this experiment was 1920x1080 H.264 at 23.98 fps,
+with SAR 2:1, stereo metadata `left_right`, and a filename containing
+Half-SBS. Its **display** aspect ratio was reported as 32:9 for the packed
+stereo pair, and the tested, visually correct Bino setting was
+`--input=left-right`. The format must not be inferred from filename alone.
+
+### Decoder backend A/B test
+
+Both logs also printed:
+
+```text
+Hardware is lacking required capabilities
+Failed setup for format cuda: hwaccel initialisation returned error.
+```
+
+This suggests a failed CUDA hardware-decoder attempt; it does **not**
+establish that decoding failures are responsible for ongoing jitter.
+Qt Multimedia documents an environment override that can prioritize
+VA-API (on supported Mesa/Intel/AMD hardware) or disable all hardware
+decoding to compare performance:
+
+```sh
+# Try a VA-API decoder:
+QT_FFMPEG_DECODING_HW_DEVICE_TYPES=vaapi ./build/bino ...
+
+# Disable all FFmpeg hardware decoding for a control test:
+QT_FFMPEG_DECODING_HW_DEVICE_TYPES=, ./build/bino ...
+```
+
+Repeat the *same* scene, 120 Hz display mode, `compose` trigger,
+`--nvstusb-phase=0`, and `--nvstusb-stats` for 60 seconds. Compare
+callback Hz, late callbacks and maximum interval along with the visual
+stereoscopic stability. Do not change video mode or phase at the same time.
+
+See Qt's documentation:
+https://doc.qt.io/qt-6/advanced-ffmpeg-configuration.html
+
 ## Planned follow-up
 
 Measure effective alternation and shutter phase, detect skipped frames,
