@@ -21,6 +21,71 @@
 #include "videoframe.hpp"
 #include "log.hpp"
 
+#include <QElapsedTimer>
+#include <QtGlobal>
+#include <cstdio>
+
+// Diagnostics are opt-in and do not change QVideoFrame storage semantics.
+// Each thread maintains independent counters (GUI in the non-QVR player).
+namespace {
+struct FrameUpdateProfile {
+    int frames = 0;
+    int mapped = 0;
+    int images = 0;
+    int failedMaps = 0;
+    qint64 sumTotal = 0, maxTotal = 0;
+    qint64 sumUnmap = 0, maxUnmap = 0;
+    qint64 sumAssign = 0, maxAssign = 0;
+    qint64 sumMap = 0, maxMap = 0;
+    qint64 sumImage = 0, maxImage = 0;
+
+    static void accumulate(qint64 value, qint64& total, qint64& maximum)
+    {
+        total += value;
+        if (value > maximum)
+            maximum = value;
+    }
+
+    void add(qint64 totalNs, qint64 unmapNs, qint64 assignNs,
+             qint64 mapNs, qint64 imageNs, bool wasMapped,
+             bool wasImage, bool mapFailed)
+    {
+        ++frames;
+        if (wasMapped)
+            ++mapped;
+        if (wasImage)
+            ++images;
+        if (mapFailed)
+            ++failedMaps;
+        accumulate(totalNs, sumTotal, maxTotal);
+        accumulate(unmapNs, sumUnmap, maxUnmap);
+        accumulate(assignNs, sumAssign, maxAssign);
+        accumulate(mapNs, sumMap, maxMap);
+        accumulate(imageNs, sumImage, maxImage);
+        if (frames == 120) {
+            std::fprintf(stderr,
+                    "bino: video_frame stats: frames=%d mapped=%d images=%d map_failed=%d "
+                    "total_avg=%.3fms total_max=%.3fms "
+                    "unmap_avg=%.3fms unmap_max=%.3fms "
+                    "assign_avg=%.3fms assign_max=%.3fms "
+                    "map_avg=%.3fms map_max=%.3fms "
+                    "image_avg=%.3fms image_max=%.3fms "
+                    "other_avg=%.3fms\n",
+                    frames, mapped, images, failedMaps,
+                    double(sumTotal) / frames / 1e6, double(maxTotal) / 1e6,
+                    double(sumUnmap) / frames / 1e6, double(maxUnmap) / 1e6,
+                    double(sumAssign) / frames / 1e6, double(maxAssign) / 1e6,
+                    double(sumMap) / frames / 1e6, double(maxMap) / 1e6,
+                    double(sumImage) / frames / 1e6, double(maxImage) / 1e6,
+                    double(sumTotal - sumUnmap - sumAssign - sumMap - sumImage)
+                        / frames / 1e6);
+            *this = FrameUpdateProfile{};
+        }
+    }
+};
+} // namespace
+
+
 
 VideoFrame::VideoFrame() : fallback(Fallback_Minimal)
 {
@@ -61,9 +126,20 @@ static float linearToHLG(float sig)
 
 void VideoFrame::update(InputMode im, SurroundMode sm, const QVideoFrame& frame, bool newSrc)
 {
+    static const bool profile = qEnvironmentVariableIntValue("BINO_PROFILE_VIDEO_FRAME") != 0;
+    QElapsedTimer timer;
+    if (profile)
+        timer.start();
+    qint64 unmapNs = 0, assignNs = 0, mapNs = 0, imageNs = 0;
+    bool didMap = false, didImage = false, mapFailed = false;
+
     if (qframe.isMapped())
         qframe.unmap();
+    if (profile)
+        unmapNs = timer.nsecsElapsed();
     qframe = frame;
+    if (profile)
+        assignNs = timer.nsecsElapsed() - unmapNs;
 
     if (isValid()) {
         subtitle = qframe.subtitleText();
@@ -138,8 +214,13 @@ void VideoFrame::update(InputMode im, SurroundMode sm, const QVideoFrame& frame,
             pixelFormat = QVideoFrameFormat::pixelFormatFromImageFormat(QImage::Format_RGB32);
             colorRangeSmall = false;
             colorSpace = CS_AdobeRgb;
+            const qint64 imageStart = profile ? timer.nsecsElapsed() : 0;
             image = qframe.toImage();
             image.convertTo(QImage::Format_RGB32);
+            if (profile) {
+                imageNs = timer.nsecsElapsed() - imageStart;
+                didImage = true;
+            }
         } else {
             storage = Storage_Mapped;
             pixelFormat = qframe.pixelFormat();
@@ -192,7 +273,13 @@ void VideoFrame::update(InputMode im, SurroundMode sm, const QVideoFrame& frame,
                 masteringWhite = linearToHLG(qframe.surfaceFormat().maxLuminance() / 100.0f);
                 break;
             }
-            qframe.map(QVideoFrame::ReadOnly);
+            const qint64 mapStart = profile ? timer.nsecsElapsed() : 0;
+            const bool mapOk = qframe.map(QVideoFrame::ReadOnly);
+            if (profile) {
+                mapNs = timer.nsecsElapsed() - mapStart;
+                didMap = true;
+                mapFailed = !mapOk;
+            }
             planeCount = qframe.planeCount();
             for (int p = 0; p < planeCount; p++) {
                 bytesPerLine[p] = qframe.bytesPerLine(p);
@@ -220,6 +307,12 @@ void VideoFrame::update(InputMode im, SurroundMode sm, const QVideoFrame& frame,
         height = image.height();
         aspectRatio = float(width) / height;
         storage = Storage_Image;
+    }
+
+    if (profile) {
+        static thread_local FrameUpdateProfile stats;
+        stats.add(timer.nsecsElapsed(), unmapNs, assignNs, mapNs, imageNs,
+                  didMap, didImage, mapFailed);
     }
 }
 
