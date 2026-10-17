@@ -20,6 +20,8 @@
 
 #include <QUrl>
 #include <QElapsedTimer>
+#include <QCoreApplication>
+#include <QThread>
 #include <QtGlobal>
 #include <cstdio>
 
@@ -136,10 +138,13 @@ void VideoSink::processNewFrame(const QVideoFrame& frame)
 
         if (_processSamples >= 120) {
             std::fprintf(stderr,
-                    "bino: video_sink stats: frames=%d "
+                    "bino: video_sink stats: gui_thread=%s frames=%d "
                     "handler_avg=%.3fms handler_max=%.3fms "
                     "update_avg=%.3fms update_max=%.3fms "
                     "handler_gt1ms=%d gt4ms=%d gt8ms=%d\n",
+                    QCoreApplication::instance()
+                        && QThread::currentThread() == QCoreApplication::instance()->thread()
+                            ? "yes" : "no",
                     _processSamples,
                     double(_processTotalNs) / _processSamples / 1e6,
                     double(_processMaxNs) / 1e6,
