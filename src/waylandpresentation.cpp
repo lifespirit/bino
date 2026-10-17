@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <ctime>
 #include <unordered_set>
 
 #if defined(WITH_WAYLAND_PRESENTATION) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
@@ -37,6 +38,9 @@ struct PresentationTracker::Impl
     uint64_t presented = 0, discarded = 0, skippedVblanks = 0, parityErrors = 0;
     uint64_t feedbackSamples = 0, feedbackLatencyNs = 0;
     uint64_t feedbackOverflow = 0;
+    uint64_t lastPresentationNs = 0;
+    uint64_t actualPresentationGapNs = 0, maxPresentationGapNs = 0;
+    uint64_t actualGapSamples = 0, callbackAfterPresentNs = 0, callbackLagSamples = 0;
     uint32_t lastRefreshNs = 0;
 
     static void global(void* data, wl_registry* registry, uint32_t name,
@@ -58,23 +62,44 @@ struct PresentationTracker::Impl
     }
     static void output(void*, wp_presentation_feedback*, wl_output*) {}
     static void shown(void* data, wp_presentation_feedback*,
-                      uint32_t, uint32_t, uint32_t,
+                      uint32_t timeHi, uint32_t timeLo, uint32_t nsec,
                       uint32_t refresh, uint32_t seqHi, uint32_t seqLo, uint32_t)
     {
         auto* sample = static_cast<Sample*>(data);
         const uint64_t seq = (uint64_t(seqHi) << 32) | seqLo;
-        sample->owner->complete(sample, true, seq, refresh);
+        const uint64_t whenNs = ((uint64_t(timeHi) << 32) | timeLo) * 1000000000ull + nsec;
+        sample->owner->complete(sample, true, seq, refresh, whenNs);
     }
     static void dropped(void* data, wp_presentation_feedback*)
     {
         auto* sample = static_cast<Sample*>(data);
-        sample->owner->complete(sample, false, 0, 0);
+        sample->owner->complete(sample, false, 0, 0, 0);
     }
-    void complete(Sample* sample, bool wasPresented, uint64_t sequence, uint32_t refresh)
+    void complete(Sample* sample, bool wasPresented, uint64_t sequence,
+                  uint32_t refresh, uint64_t timestampNs)
     {
         if (wasPresented) {
             ++presented;
             lastRefreshNs = refresh;
+            if (lastPresentationNs && timestampNs > lastPresentationNs) {
+                const uint64_t gap = timestampNs - lastPresentationNs;
+                actualPresentationGapNs += gap;
+                ++actualGapSamples;
+                if (gap > maxPresentationGapNs)
+                    maxPresentationGapNs = gap;
+            }
+            if (timestampNs)
+                lastPresentationNs = timestampNs;
+            if (timestampNs && presentationClockId >= 0) {
+                timespec ts{};
+                if (clock_gettime(clockid_t(presentationClockId), &ts) == 0) {
+                    const uint64_t nowNs = uint64_t(ts.tv_sec) * 1000000000ull + ts.tv_nsec;
+                    if (nowNs >= timestampNs) {
+                        callbackAfterPresentNs += nowNs - timestampNs;
+                        ++callbackLagSamples;
+                    }
+                }
+            }
             if (sequence != 0 && haveSequence && sequence > lastSequence) {
                 const uint64_t delta = sequence - lastSequence;
                 if (delta > 1)
@@ -104,18 +129,24 @@ struct PresentationTracker::Impl
                     "bino: wayland-presentation stats: presented=%llu discarded=%llu "
                     "skipped_vblanks=%llu eye_parity_errors=%llu "
                     "pending=%zu feedback_overflow=%llu refresh=%.3fms "
-                    "feedback_avg=%.3fms clock_id=%d\n",
+                    "present_gap_avg=%.3fms present_gap_max=%.3fms "
+                    "callback_after_present_avg=%.3fms feedback_avg=%.3fms clock_id=%d\n",
                     (unsigned long long)presented,
                     (unsigned long long)discarded,
                     (unsigned long long)skippedVblanks,
                     (unsigned long long)parityErrors,
                     pending.size(), (unsigned long long)feedbackOverflow,
                     double(lastRefreshNs) / 1e6,
+                    actualGapSamples ? double(actualPresentationGapNs) / actualGapSamples / 1e6 : 0.,
+                    double(maxPresentationGapNs) / 1e6,
+                    callbackLagSamples ? double(callbackAfterPresentNs) / callbackLagSamples / 1e6 : 0.,
                     feedbackSamples ? double(feedbackLatencyNs) / feedbackSamples / 1e6 : 0.,
                     presentationClockId);
             presented = discarded = skippedVblanks = parityErrors = 0;
             feedbackSamples = feedbackLatencyNs = 0;
             feedbackOverflow = 0;
+            actualPresentationGapNs = maxPresentationGapNs = 0;
+            actualGapSamples = callbackAfterPresentNs = callbackLagSamples = 0;
         }
     }
     bool initialize(QWindow* window)
