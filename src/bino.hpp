@@ -84,6 +84,9 @@ private:
 
     /* Static data for rendering, initialized in initProcess() */
     unsigned int _depthTex;
+    // Avoid reallocating the full-resolution depth buffer on every frame.
+    int _depthTexWidth = 0;
+    int _depthTexHeight = 0;
     unsigned int _frameFbo;
     unsigned int _viewFbo;
     unsigned int _quadVao;
