@@ -300,3 +300,53 @@ can establish whether a slow decoder-frame handler is blocking the Qt
 GUI event loop. All timers measure CPU-side wall-clock elapsed time;
 the operation timing is observational only. No asynchronous frame
 queue or alternative buffer ownership strategy has been enabled yet.
+
+## v6: definitive GUI-thread bottleneck and experimental async mitigation
+
+The `BINO_PROFILE_VIDEO_FRAME=1` test confirmed `QVideoFrame::map(ReadOnly)`
+is the dominant contributor to GUI stalls: around **11.06 ms on
+average** across thirteen 120-frame reporting windows (1560 frames).
+`unmap()` averaged about **0.002 ms** and reference assignment about
+**0.012 ms**. `VideoSink` reported `gui_thread=yes` in every window.
+Thus the synchronous map blocks the GUI event loop well beyond a
+120 Hz monitor's 8.33 ms refresh period.
+
+An **opt-in, experimental** workaround is now available for SBS/TB
+and other single-source-frame modes:
+
+```sh
+BINO_ASYNC_VIDEO_MAP=1 \
+BINO_PROFILE_VIDEO_FRAME=1 QT_QPA_PLATFORM=wayland ./build/bino \
+  --input=left-right-half --output=alternating --fullscreen \
+  --nvstusb --nvstusb-dry-run --nvstusb-stats \
+  --nvstusb-ignore-video-wakeups \
+  "/path/to/23.98fps-half-sbs.mkv" \
+  2>&1 | tee /tmp/bino-dry-v7.log
+```
+
+The new worker maps the input frame, performs metadata conversion,
+copies the mapped image planes into independent CPU memory, and
+unmaps on its worker thread. Completed frames are transferred using a
+queued GUI callback; only that callback replaces Bino's displayed
+`VideoFrame`. GL uploads continue on the GUI/GL thread but now
+use the stored plane strides, not `QVideoFrame::bytesPerLine()` on
+an unmapped decoder buffer.
+
+To bound latency and memory, only one frame can be preparing and one
+pending input frame is retained: newer input replaces any older
+pending frame. Async results from older playlist generations are
+discarded. `video_sink async stats` reports delivered frame count
+and overwritten pending count. For ordinary 23.98 fps video and
+~12 ms worker mapping, pending frame drops are not expected.
+
+This mode is intentionally **off by default** and not yet validated
+on the user's Qt/AMD GPU system. Mapping GPU-backed Qt video frames
+on another thread is an experiment; monitor for failed mappings,
+renderer artifacts, FFmpeg backend compatibility, A/V delay, and
+application lifetime issues. Keep the IR emitter disconnected
+(`--nvstusb-dry-run`) during the first test. The old input-video
+alternating frame-pair modes are excluded from the async path.
+
+Compare `paint` and `paint_late_new` in the v7 log against v6,
+as well as `video_sink async stats`. Even 120 Hz Qt frame callbacks
+alone do **not** guarantee synchronization with physical scanout.
