@@ -19,6 +19,7 @@
  */
 
 #include <QGuiApplication>
+#include <QElapsedTimer>
 #include <QMessageBox>
 #include <QQuaternion>
 #include <QtMath>
@@ -266,6 +267,10 @@ void Widget::rebuildDisplayPrgIfNecessary(OutputMode outputMode)
 
 void Widget::paintGL()
 {
+    QElapsedTimer paintTimer;
+    if (_nvstusb)
+        paintTimer.start();
+
     // Support for HighDPI output
     int width = _width * devicePixelRatioF();
     int height = _height * devicePixelRatioF();
@@ -275,7 +280,14 @@ void Widget::paintGL()
     float frameDisplayAspectRatio;
     bool surround;
     Bino::instance()->updateMainProcess();
-    Bino::instance()->preRenderProcess(width, height, &viewCount, &viewWidth, &viewHeight, &frameDisplayAspectRatio, &surround);
+    bool newVideoFrameUploaded = false;
+    QElapsedTimer preRenderTimer;
+    if (_nvstusb)
+        preRenderTimer.start();
+    Bino::instance()->preRenderProcess(width, height, &viewCount, &viewWidth,
+            &viewHeight, &frameDisplayAspectRatio, &surround,
+            _nvstusb ? &newVideoFrameUploaded : nullptr);
+    const qint64 preRenderNs = _nvstusb ? preRenderTimer.nsecsElapsed() : 0;
 
     // Adjust the stereo mode if necessary
     bool frameIsStereo = (viewCount == 2);
@@ -445,7 +457,8 @@ void Widget::paintGL()
     // Record the eye actually rendered, independently of Qt composition.
     // This is a diagnostic observation, NOT a Wayland presentation event.
     if (_nvstusb && _nvstusbRenderedEye >= 0)
-        _nvstusb->onFramePainted(_nvstusbRenderedEye);
+        _nvstusb->onFramePainted(_nvstusbRenderedEye, newVideoFrameUploaded,
+                                 preRenderNs, paintTimer.nsecsElapsed());
 
     // Update Output_Alternating
     if (_outputMode == Output_Alternating && frameIsStereo) {
