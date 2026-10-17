@@ -396,3 +396,57 @@ establish optical shutter alignment: Qt `frameSwapped` is not
 Wayland physical presentation feedback. Check actual viewing
 and left/right shutter timing carefully. Do not claim the shutters
 are phase-locked before external timing or presentation measurements.
+
+## v8 investigation: residual compositor/Qt stereo timing glitches
+
+With real USB and asynchronous mapping, `--nvstusb-trigger=swap`
+produced ~118.56 Hz average in 22 reporting windows and
+115 callback intervals longer than 12.5 ms. `compose` yielded
+~118.83 Hz and 99 late intervals in 22 windows (one clean
+five-second window only). Longest callback gaps were ~41.24 ms
+for swap and ~21.24 ms for compose. USB writes stayed <= 0.4 ms.
+The user's physical right-eye shutter still visibly flickers every
+5–10 seconds, making 3D uncomfortable. Neither trigger solves it.
+
+**Do not rely on these paths for comfortable viewing.** Qt
+`QOpenGLWidget::aboutToCompose` and `frameSwapped` do not expose
+Wayland physical presentation timestamps. An application may redraw
+at ~120 Hz but still miss a display refresh; the IR emitter is
+currently commanded by these Qt callbacks rather than a physical
+vblank / refresh sequence. The logs alone do not distinguish an
+occasional missed display frame, misphased IR signal, or a problem
+with the physical right-eye shutter.
+
+A conservative *dry-run-only* experiment is now available to test
+whether preserving the QOpenGLWidget framebuffer contributes:
+
+```sh
+BINO_ASYNC_VIDEO_MAP=1 BINO_STEREO_NO_PARTIAL_UPDATE=1 \
+QT_QPA_PLATFORM=wayland ./build/bino \
+  --input=left-right-half --output=alternating --fullscreen \
+  --nvstusb --nvstusb-dry-run --nvstusb-stats \
+  "/path/to/23.98fps-half-sbs.mkv" \
+  2>&1 | tee /tmp/bino-no-partial-dry.log
+```
+
+Compare against an otherwise identical dry-run without
+`BINO_STEREO_NO_PARTIAL_UPDATE=1`. In this experiment the widget
+invalidates its FBO after each complete stereo repaint rather than
+preserving it. It has **not been confirmed** to improve callback
+cadence, and even perfect Qt callback cadence would not prove
+physical presentation/shutter synchronization. Do not do prolonged
+visual tests with the glasses until this is resolved.
+
+Also make sure KWin/monitor adaptive sync (VRR) is disabled and the
+output mode is fixed 120 Hz before measuring frame timing.
+
+**Proper solution direction:** use the Wayland `wp_presentation`
+feedback protocol on a true presentation surface. It reports
+whether a committed frame was presented or discarded, and reports
+a hardware-refresh sequence where available. Align the stereo
+display buffer's eye identity with actual presentation sequence
+and schedule shutter commands from a clock/refresh-prediction
+source. Account explicitly for discarded or repeated frames rather
+than toggling an eye on each `paintGL()`. A native fullscreen
+QOpenGLWindow avoids QOpenGLWidget's extra QWidget composition, but
+it alone does not provide physical presentation confirmation.
