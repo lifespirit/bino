@@ -24,6 +24,7 @@
 #include <QtMath>
 
 #include "widget.hpp"
+#include "nvstusbcontroller.hpp"
 #include "playlist.hpp"
 #include "tools.hpp"
 #include "log.hpp"
@@ -39,12 +40,14 @@
 
 static const QSize SizeBase(16, 9);
 
-Widget::Widget(OutputMode outputMode, float surroundVerticalFOV, QWidget* parent) :
+Widget::Widget(OutputMode outputMode, float surroundVerticalFOV,
+               NvstusbController* nvstusb, QWidget* parent) :
     QOpenGLWidget(parent),
     _sizeHint(0.5f * SizeBase),
     _lastFrameRelWidth(1.0f), _lastFrameRelHeight(1.0f),
     _outputMode(outputMode),
     _alternatingLastView(1),
+    _nvstusb(nvstusb),
     _inOverlayUIEvent(false),
     _inSurroundMovement(false),
     _surroundHorizontalAngleBase(0.0f),
@@ -55,6 +58,11 @@ Widget::Widget(OutputMode outputMode, float surroundVerticalFOV, QWidget* parent
     setSurroundVerticalFieldOfView(surroundVerticalFOV);
     _surroundVerticalFOVDefault = _surroundVerticalFOV; // to make sure clamping was applied
     setUpdateBehavior(QOpenGLWidget::PartialUpdate);
+    // Delivered after Qt's buffer swap; NOT guaranteed physical scanout timing.
+    connect(this, &QOpenGLWidget::frameSwapped, this, [this]() {
+        if (_nvstusb && _nvstusbRenderedEye >= 0)
+            _nvstusb->onFrameSwapped(_nvstusbRenderedEye);
+    });
     setMouseTracking(true);
     setMinimumSize(8, 8);
     QSize screenSize = QGuiApplication::primaryScreen()->availableSize();
@@ -81,6 +89,7 @@ OutputMode Widget::outputMode() const
 
 void Widget::setOutputMode(enum OutputMode mode)
 {
+    _nvstusbRenderedEye = -1;
     _outputMode = mode;
 }
 
@@ -378,6 +387,10 @@ void Widget::paintGL()
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, _viewTex[1]);
     glBindVertexArray(_quadVao);
+    // paintGL() toggles _alternatingLastView below. Remember the eye
+    // actually drawn for the subsequent QOpenGLWidget::frameSwapped signal.
+    _nvstusbRenderedEye = (outputMode == Output_Alternating && frameIsStereo)
+            ? (_alternatingLastView == 0 ? 1 : 0) : -1;
     if (isOpenGLStereo()) {
         LOG_FIREHOSE("widget draw mode: opengl stereo");
         if (outputMode == Output_OpenGL_Stereo) {

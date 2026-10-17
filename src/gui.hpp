@@ -27,6 +27,8 @@
 #include "widget.hpp"
 
 
+class NvstusbController;
+
 class Gui : public QMainWindow
 {
 Q_OBJECT
@@ -112,7 +114,8 @@ protected:
     virtual void moveEvent(QMoveEvent*) override;
 
 public:
-    Gui(OutputMode outputMode, float surroundVerticalFOV, bool fullscreen);
+    Gui(OutputMode outputMode, float surroundVerticalFOV, bool fullscreen,
+        NvstusbController* nvstusb = nullptr);
 
     static Gui* instance();
 

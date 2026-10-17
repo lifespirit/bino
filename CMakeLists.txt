@@ -17,6 +17,16 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 
 # Required: Qt6
 find_package(Qt6 6.7.0 REQUIRED COMPONENTS OpenGLWidgets Multimedia LinguistTools)
+
+# Experimental USB shutter control (off by default; no NVIDIA GPU required).
+option(ENABLE_NVSTUSB "Build experimental NVIDIA 3D Vision USB support" OFF)
+if(ENABLE_NVSTUSB)
+    if(NOT UNIX)
+        message(FATAL_ERROR "NVIDIA 3D Vision USB support currently requires Linux/Unix")
+    endif()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(NVSTUSB REQUIRED IMPORTED_TARGET libnvstusb)
+endif()
 # Optional: QVR for Virtual Reality support
 find_package(QVR 4.1.0 QUIET)
 if(QVR_FOUND)
@@ -39,6 +49,7 @@ add_executable(bino
 	src/bino.hpp src/bino.cpp
 	src/qvrapp.hpp src/qvrapp.cpp
 	src/widget.hpp src/widget.cpp
+	src/nvstusbcontroller.hpp src/nvstusbcontroller.cpp
 	src/commandinterpreter.hpp src/commandinterpreter.cpp
 	src/playlisteditor.hpp src/playlisteditor.cpp
 	src/gui.hpp src/gui.cpp
@@ -64,6 +75,10 @@ qt6_add_resources(bino "misc" PREFIX "/" FILES
 	res/bino-fallback-frame.png)
 set_target_properties(bino PROPERTIES WIN32_EXECUTABLE TRUE)
 target_link_libraries(bino PRIVATE Qt6::OpenGLWidgets Qt6::Multimedia ${QVR_LIBRARIES})
+if(ENABLE_NVSTUSB)
+    target_compile_definitions(bino PRIVATE WITH_NVSTUSB)
+    target_link_libraries(bino PRIVATE PkgConfig::NVSTUSB)
+endif()
 install(TARGETS bino RUNTIME DESTINATION bin)
 
 # The manual and man page (optional, only if pandoc is found)
@@ -100,6 +115,11 @@ if(UNIX)
     install(FILES "res/org.bino3d.bino.metainfo.xml" DESTINATION share/metainfo)
 endif()
 
+if(ENABLE_NVSTUSB)
+    message(STATUS "Build Bino with NVIDIA 3D Vision USB support: YES")
+else()
+    message(STATUS "Build Bino with NVIDIA 3D Vision USB support: NO")
+endif()
 if (QVR_FOUND)
     message(STATUS "Build Bino with QVR support: YES")
 else()

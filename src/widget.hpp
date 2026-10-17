@@ -28,6 +28,8 @@
 #include "bino.hpp"
 
 
+class NvstusbController;
+
 class Widget : public QOpenGLWidget, protected QOpenGLExtraFunctions
 {
 Q_OBJECT
@@ -40,6 +42,8 @@ private:
 
     OutputMode _outputMode;
     int _alternatingLastView; // last view displayed in Mode_Alternating (0 or 1)
+    NvstusbController* _nvstusb;
+    int _nvstusbRenderedEye = -1; // view captured during paintGL, before toggle
 
     bool _inOverlayUIEvent;
     float _surroundVerticalFOVDefault;
@@ -62,7 +66,8 @@ private:
     QPointF toView(const QPointF& pos) const;
 
 public:
-    Widget(OutputMode outputMode, float surroundVerticalFOV, QWidget* parent = nullptr);
+    Widget(OutputMode outputMode, float surroundVerticalFOV,
+           NvstusbController* nvstusb = nullptr, QWidget* parent = nullptr);
 
     bool isOpenGLStereo() const;
     OutputMode outputMode() const;

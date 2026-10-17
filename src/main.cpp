@@ -19,6 +19,7 @@
  */
 
 #include <cstdio>
+#include "nvstusbcontroller.hpp"
 
 #include <QApplication>
 #include <QSettings>
@@ -226,6 +227,19 @@ int main(int argc, char* argv[])
             QCommandLineParser::tr("Swap left/right eye.") });
     parser.addOption({ { "f", "fullscreen" },
             QCommandLineParser::tr("Start in fullscreen mode.") });
+    parser.addOption({ "nvstusb",
+            QCommandLineParser::tr("Use experimental NVIDIA 3D Vision USB shutter emitter with alternating output.") });
+    parser.addOption({ "nvstusb-firmware",
+            QCommandLineParser::tr("Path to NVIDIA 3D Vision firmware (default: nvstusb.fw)."),
+            "path", "nvstusb.fw" });
+    parser.addOption({ "nvstusb-rate",
+            QCommandLineParser::tr("Emitter frame rate in Hz (default 120; set monitor to match)."),
+            "hz", "120" });
+    parser.addOption({ "nvstusb-phase",
+            QCommandLineParser::tr("Delay each shutter command after Qt frameSwapped, 0-7 ms (default 0)."),
+            "ms", "0" });
+    parser.addOption({ "nvstusb-invert",
+            QCommandLineParser::tr("Invert emitter shutter eye selection.") });
     parser.process(app);
 
     // Initialize logging
@@ -772,8 +786,31 @@ int main(int argc, char* argv[])
             if (ok)
                 outputMode = om;
         }
+        // Initialize the optional USB emitter only in alternating GUI output mode.
+        NvstusbController nvstusbController;
+        if (parser.isSet("nvstusb")) {
+            if (outputMode != Output_Alternating) {
+                LOG_FATAL("bino: --nvstusb requires --output=alternating");
+                return 1;
+            }
+            bool rateOk = false;
+            bool phaseOk = false;
+            const float rate = parser.value("nvstusb-rate").toFloat(&rateOk);
+            const int phaseMs = parser.value("nvstusb-phase").toInt(&phaseOk);
+            if (!rateOk || rate < 90.0f || rate > 240.0f || !phaseOk
+                    || phaseMs < 0 || phaseMs > 7) {
+                LOG_FATAL("bino: invalid --nvstusb-rate or --nvstusb-phase");
+                return 1;
+            }
+            if (!nvstusbController.start(parser.value("nvstusb-firmware"), rate,
+                        phaseMs, parser.isSet("nvstusb-invert"))) {
+                LOG_FATAL("bino: failed to initialize NVIDIA 3D Vision emitter");
+                return 1;
+            }
+        }
         // Start the GUI
-        Gui gui(outputMode, surroundVerticalFOV, parser.isSet("fullscreen"));
+        Gui gui(outputMode, surroundVerticalFOV, parser.isSet("fullscreen"),
+                parser.isSet("nvstusb") ? &nvstusbController : nullptr);
         gui.show();
         // wait for several seconds to process all events before starting
         // the playlist, because otherwise playing might be finished before
