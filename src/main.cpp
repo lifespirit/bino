@@ -53,6 +53,7 @@
 #include "screen.hpp"
 #include "qvrapp.hpp"
 #include "gui.hpp"
+#include "stereowindow.hpp"
 #include "commandinterpreter.hpp"
 #include "modes.hpp"
 #include "tools.hpp"
@@ -245,6 +246,8 @@ int main(int argc, char* argv[])
             "mode", "swap" });
     parser.addOption({ "nvstusb-stats",
             QCommandLineParser::tr("Print 3D Vision Qt paint/compose/swap and USB timing stats every 5 seconds.") });
+    parser.addOption({ "nvstusb-native-window",
+            QCommandLineParser::tr("Experimental: display alternating stereo in a native fullscreen QOpenGLWindow (requires --nvstusb, --fullscreen).") });
     parser.addOption({ "nvstusb-dry-run",
             QCommandLineParser::tr("Measure alternating Qt frame lifecycle without opening the USB emitter.") });
     parser.addOption({ "nvstusb-ignore-video-wakeups",
@@ -835,6 +838,23 @@ int main(int argc, char* argv[])
                 LOG_FATAL("bino: failed to initialize NVIDIA 3D Vision emitter");
                 return 1;
             }
+        }
+        if (parser.isSet("nvstusb-native-window")) {
+            if (!parser.isSet("nvstusb") || !parser.isSet("fullscreen")
+                    || outputMode != Output_Alternating) {
+                LOG_FATAL("bino: --nvstusb-native-window requires --nvstusb, --output=alternating, --fullscreen");
+                return 1;
+            }
+            std::fprintf(stderr,
+                    "bino: nvstusb: EXPERIMENTAL native QOpenGLWindow fullscreen path "
+                    "(direct EGL, no QWidget compositing; Qt swap != physical presentation)\n");
+            StereoWindow window(outputMode, surroundVerticalFOV, &nvstusbController);
+            window.setFormat(QSurfaceFormat::defaultFormat());
+            window.showFullScreen();
+            QGuiApplication::processEvents(QEventLoop::AllEvents, 3000);
+            playlist.start();
+            cmdInterpreter.start();
+            return app.exec();
         }
         // Start the GUI
         Gui gui(outputMode, surroundVerticalFOV, parser.isSet("fullscreen"),
