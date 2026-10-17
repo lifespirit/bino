@@ -96,8 +96,10 @@ Widget::Widget(OutputMode outputMode, float surroundVerticalFOV,
     connect(Bino::instance(), &Bino::newVideoFrame, this, [this]() {
         if (_nvstusb && _nvstusb->ignoreVideoWakeups()
                 && _outputMode == Output_Alternating
-                && _nvstusbAlternatingActive)
+                && _nvstusbAlternatingActive) {
+            _nvstusb->noteSuppressedVideoWakeup();
             return;
+        }
         update();
     });
     connect(Bino::instance(), &Bino::toggleFullscreen, [=]() { emit toggleFullscreen(); });
