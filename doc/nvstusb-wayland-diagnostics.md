@@ -107,3 +107,40 @@ calibrating the latency from frame scanout to the glasses' IR response.
 Qt `frameSwapped` alone does not provide this. Even presentation
 feedback reports when a buffer became visible, so a full solution
 must account for shutter-command lead time and display scanout.
+
+## Results and follow-up: asymmetrical shutter behavior (2026-10-17)
+
+The first 60-second comparisons on an actual 23.98 fps Half-SBS video showed:
+
+- Dry-run Qt callbacks: **97.0–109.6 Hz**, typically near 100 Hz.
+- With USB enabled: **96.4–113.2 Hz**, also typically near 100 Hz.
+- Both had multi-frame stalls of roughly **16–47 ms**, far above the
+  **8.33 ms** refresh period at 120 Hz.
+- Qt reported `same_eye=0`, `replaced=0` in these tests. Real USB
+  calls were generally under 0.3 ms, so their measured duration does not
+  explain the missing ~20 Hz.
+- The decoder printed `GPU at BusId ... doesn't have a supported video
+  decoder`. This may indicate software decode, but we have **not yet
+  established it as the cause** of the frame cadence problem.
+
+The video renderer originally allocated a new full-resolution depth
+texture in `Bino::render()` on every paint. The source now reuses that
+texture until resolution/context initialization changes. This is a
+**performance experiment**, not a proven fix for the physical IR timing.
+
+The statistics now distinguish the two alternating transition directions:
+
+- `LtoR_avg`, `LtoR_max`: interval between left then right callback
+- `RtoL_avg`, `RtoL_max`: interval between right then left callback
+- `usb_left_max`, `usb_right_max`: worst observed synchronous USB
+  write time per eye
+
+Rebuild Bino and rerun **dry-run first**, using the identical screen
+mode/movie/scene and at least 30 seconds of steady playback. Compare
+`paint`, `late`, `LtoR_avg`, and `RtoL_avg` with the previous run.
+Only if dry-run improves, retest with real USB enabled.
+
+Do not assume that equal average transition gaps prove equal physical
+shutter duty cycles: the emitter firmware and IR receiver also have
+their own timing/state machines. Conversely, observing different
+shutter brightness does not prove one lens is broken.
