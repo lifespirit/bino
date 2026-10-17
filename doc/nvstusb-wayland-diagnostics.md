@@ -350,3 +350,49 @@ alternating frame-pair modes are excluded from the async path.
 Compare `paint` and `paint_late_new` in the v7 log against v6,
 as well as `video_sink async stats`. Even 120 Hz Qt frame callbacks
 alone do **not** guarantee synchronization with physical scanout.
+
+## v7: first async results (Half-SBS 1080p, 23.98 fps)
+
+With `BINO_ASYNC_VIDEO_MAP=1` enabled, the first 13 reported five-second
+windows contain **7699 Qt paint callbacks in approximately 65 seconds**,
+or **118.4 Hz** overall, compared with ~100.6 Hz in the preceding
+synchronous-map run. Most steady windows reach 119.2--119.8 Hz.
+Only **31 of 1556 paints uploading new decoded frames** (~2.0%)
+followed a long paint interval; this was close to 99% in the previous
+synchronous mode.
+
+The async queue reported **1560 frames delivered and zero overwritten
+pending frames**, and no mapping errors were printed. Residual Qt
+callback outliers up to ~31 ms remain; this is therefore not yet a
+guarantee of physical 120 Hz scanout/shutter alignment.
+
+**Instrumentation correction after v7:** `VideoFrame()` invokes
+`update()` once on an invalid fallback frame. The first v7
+`video_frame stats` reports therefore included one invalid constructor
+call per real decoded frame (`frames=120 mapped=60`), artificially
+halving the per-call average mapping time. Commit bc23a06 excludes
+invalid fallback frames from this profiler only. Future reports
+represent valid input movie frames (`frames=120 mapped=120`), and
+the actual per-map averages should be closer to 12--14 ms, **not**
+the 6--7 ms diluted averages in v7. The actual worker algorithm,
+rendering and ownership rules are unchanged.
+
+The next step is a limited **real emitter** test. Recompile first, then
+use the environment variable to enable the worker **without**
+`--nvstusb-dry-run` and without the dry-run-only
+`--nvstusb-ignore-video-wakeups`:
+
+```sh
+BINO_ASYNC_VIDEO_MAP=1 QT_QPA_PLATFORM=wayland ./build/bino \
+  --input=left-right-half --output=alternating --fullscreen \
+  --nvstusb --nvstusb-stats \
+  "/path/to/23.98fps-half-sbs.mkv" \
+  2>&1 | tee /tmp/bino-usb-async.log
+```
+
+This test checks whether the previously measured GUI pacing
+improvement survives synchronous USB transfer overhead. It does not
+establish optical shutter alignment: Qt `frameSwapped` is not
+Wayland physical presentation feedback. Check actual viewing
+and left/right shutter timing carefully. Do not claim the shutters
+are phase-locked before external timing or presentation measurements.
