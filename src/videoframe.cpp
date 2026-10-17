@@ -309,7 +309,10 @@ void VideoFrame::update(InputMode im, SurroundMode sm, const QVideoFrame& frame,
         storage = Storage_Image;
     }
 
-    if (profile) {
+    // Only count actual valid decoded frames. The async worker creates
+    // a VideoFrame per request, whose constructor initializes an invalid
+    // fallback; counting those would halve the reported map average.
+    if (profile && frame.isValid()) {
         static thread_local FrameUpdateProfile stats;
         stats.add(timer.nsecsElapsed(), unmapNs, assignNs, mapNs, imageNs,
                   didMap, didImage, mapFailed);
