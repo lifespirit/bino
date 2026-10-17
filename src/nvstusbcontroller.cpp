@@ -88,6 +88,12 @@ bool NvstusbController::start(const QString& firmware, float rate, int phaseMs,
     _replacedCommands = 0;
     _lastEye = -1;
     _sameEyeCount = 0;
+    for (int eye = 0; eye < 2; ++eye) {
+        _gapToEyeNs[eye] = 0;
+        _gapToEyeMaxNs[eye] = 0;
+        _gapToEyeCount[eye] = 0;
+        _usbByEyeMaxNs[eye] = 0;
+    }
     _paintCount = 0;
     _composeCount = 0;
     _swapCount = 0;
@@ -176,6 +182,12 @@ void NvstusbController::onFrameReady(int eye)
             ++_intervalCount;
             if (delta > _maxDeltaNs)
                 _maxDeltaNs = delta;
+            if (_lastEye != eye) {
+                _gapToEyeNs[eye] += delta;
+                ++_gapToEyeCount[eye];
+                if (delta > _gapToEyeMaxNs[eye])
+                    _gapToEyeMaxNs[eye] = delta;
+            }
 
             // Intervals >1.5 nominal refresh periods are suspicious, but
             // cannot prove a missed hardware presentation.
@@ -224,6 +236,8 @@ void NvstusbController::sendPendingEye()
         const qint64 duration = _clock.nsecsElapsed() - begin;
         if (duration > _maxUsbNs)
             _maxUsbNs = duration;
+        if (duration > _usbByEyeMaxNs[eye])
+            _usbByEyeMaxNs[eye] = duration;
         if (error == 0)
             ++_usbCommandCount;
     }
@@ -255,13 +269,20 @@ void NvstusbController::reportStatsIfDue(qint64 now)
     const double swapHz = elapsed > 0.0 ? double(_swapCount) / elapsed : 0.0;
     const double paintAvgMs = _paintIntervalCount > 0
             ? double(_paintIntervalsNs) / double(_paintIntervalCount) / 1e6 : 0.0;
+    const double gapToLeftMs = _gapToEyeCount[0]
+            ? double(_gapToEyeNs[0]) / _gapToEyeCount[0] / 1e6 : 0.0;
+    const double gapToRightMs = _gapToEyeCount[1]
+            ? double(_gapToEyeNs[1]) / _gapToEyeCount[1] / 1e6 : 0.0;
 
     std::fprintf(stderr,
             "bino: nvstusb stats: trigger=%s%s "
             "paint=%d(%.1fHz avg=%.2fms max=%.2fms same_eye=%d) "
             "compose=%d(%.1fHz no_new_paint=%d coalesced=%d) "
             "swap=%d(%.1fHz) callbacks=%d(%.1fHz avg=%.2fms max=%.2fms "
-            "late=%d same_eye=%d) commands=%d usb_max=%.2fms replaced=%d\n",
+            "late=%d same_eye=%d) commands=%d usb_max=%.2fms replaced=%d "
+            "RtoL_avg=%.2fms RtoL_max=%.2fms "
+            "LtoR_avg=%.2fms LtoR_max=%.2fms "
+            "usb_left_max=%.2fms usb_right_max=%.2fms\n",
             _trigger == Trigger::Compose ? "compose" : "swap",
             _dryRun ? "/dry-run" : "",
             _paintCount, paintHz, paintAvgMs, double(_maxPaintIntervalNs) / 1e6,
@@ -269,7 +290,10 @@ void NvstusbController::reportStatsIfDue(qint64 now)
             _compositionsWithoutPaint, _coalescedPaints,
             _swapCount, swapHz, _callbackCount, hz, avgDeltaMs,
             double(_maxDeltaNs) / 1e6, _lateCount, _sameEyeCount,
-            _usbCommandCount, double(_maxUsbNs) / 1e6, _replacedCommands);
+            _usbCommandCount, double(_maxUsbNs) / 1e6, _replacedCommands,
+            gapToLeftMs, double(_gapToEyeMaxNs[0]) / 1e6,
+            gapToRightMs, double(_gapToEyeMaxNs[1]) / 1e6,
+            double(_usbByEyeMaxNs[0]) / 1e6, double(_usbByEyeMaxNs[1]) / 1e6);
 
     _windowStartNs = now;
     _callbackCount = 0;
@@ -281,6 +305,12 @@ void NvstusbController::reportStatsIfDue(qint64 now)
     _usbCommandCount = 0;
     _maxUsbNs = 0;
     _replacedCommands = 0;
+    for (int eye = 0; eye < 2; ++eye) {
+        _gapToEyeNs[eye] = 0;
+        _gapToEyeMaxNs[eye] = 0;
+        _gapToEyeCount[eye] = 0;
+        _usbByEyeMaxNs[eye] = 0;
+    }
     _paintCount = 0;
     _composeCount = 0;
     _swapCount = 0;
