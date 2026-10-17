@@ -144,3 +144,26 @@ Do not assume that equal average transition gaps prove equal physical
 shutter duty cycles: the emitter firmware and IR receiver also have
 their own timing/state machines. Conversely, observing different
 shutter brightness does not prove one lens is broken.
+
+## New-video-frame vs cached-frame performance counters
+
+The next dry-run measurement adds the following fields after
+`usb_right_max`:
+
+- `video_new`, `video_cached`: number of Bino GUI paints that did and did
+  not upload new media video frame data in `preRenderProcess`
+- `pre_new_avg`, `pre_new_max`: CPU wall-clock time of
+  `Bino::preRenderProcess` when uploading a new movie frame
+- `pre_cached_avg`, `pre_cached_max`: time on a normal cached redraw
+- `paint_new_avg`, `paint_new_max`: total synchronous `Widget::paintGL`
+  CPU wall-clock time on a new-frame paint
+- `paint_cached_avg`, `paint_cached_max`: same when reusing a video frame
+- `paint_late_new`, `paint_late_cached`: number of paint-to-paint gaps above
+  1.5 refresh periods, classified by whether the **later** paint uploaded
+  a new movie frame
+
+These are diagnostic CPU measurements, **not GPU fence durations**; driver
+and compositor scheduling can introduce delays outside these boundaries.
+A correlation with `video_new` does not prove the upload alone is slow.
+If both new and cached paints are fast but the intervals are late,
+investigate Qt/KWin's render/composition/pacing and GPU execution.
