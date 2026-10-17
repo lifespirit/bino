@@ -42,6 +42,7 @@ struct PresentationTracker::Impl
     uint64_t timeMissedRefresh = 0, timeParityErrors = 0, timeUncertainGaps = 0;
     uint64_t timeGapCycles = 0;
     uint64_t swapToPresentSumNs = 0, swapToPresentMaxNs = 0, swapToPresentSamples = 0;
+    uint64_t swapAfterPresent = 0;
     Sample* awaitingSwap = nullptr;
     uint64_t feedbackSamples = 0, feedbackLatencyNs = 0;
     uint64_t feedbackOverflow = 0;
@@ -125,14 +126,18 @@ struct PresentationTracker::Impl
             }
             if (timestampNs)
                 lastPresentationNs = timestampNs;
-            if (timestampNs && sample->swapTimestampNs > 0
-                    && timestampNs >= sample->swapTimestampNs) {
-                const uint64_t gap = timestampNs - sample->swapTimestampNs;
-                if (gap < 250000000ULL) {
-                    swapToPresentSumNs += gap;
-                    ++swapToPresentSamples;
-                    if (gap > swapToPresentMaxNs)
-                        swapToPresentMaxNs = gap;
+            if (timestampNs && sample->swapTimestampNs > 0) {
+                if (timestampNs >= sample->swapTimestampNs) {
+                    const uint64_t gap = timestampNs - sample->swapTimestampNs;
+                    if (gap < 250000000ULL) {
+                        swapToPresentSumNs += gap;
+                        ++swapToPresentSamples;
+                        if (gap > swapToPresentMaxNs)
+                            swapToPresentMaxNs = gap;
+                    }
+                } else if (sample->swapTimestampNs - timestampNs < 250000000ULL) {
+                    // Qt frameSwapped can occur after the presented timestamp.
+                    ++swapAfterPresent;
                 }
             }
             if (timestampNs && presentationClockId >= 0) {
@@ -183,6 +188,7 @@ struct PresentationTracker::Impl
                     "pending=%zu feedback_overflow=%llu refresh=%.3fms "
                     "present_gap_avg=%.3fms present_gap_max=%.3fms "
                     "swap_to_present_avg=%.3fms swap_to_present_max=%.3fms "
+                    "swap_after_present=%llu "
                     "callback_after_present_avg=%.3fms feedback_avg=%.3fms clock_id=%d\n",
                     (unsigned long long)presented,
                     (unsigned long long)discarded,
@@ -201,6 +207,7 @@ struct PresentationTracker::Impl
                     double(maxPresentationGapNs) / 1e6,
                     swapToPresentSamples ? double(swapToPresentSumNs) / swapToPresentSamples / 1e6 : 0.,
                     double(swapToPresentMaxNs) / 1e6,
+                    (unsigned long long)swapAfterPresent,
                     callbackLagSamples ? double(callbackAfterPresentNs) / callbackLagSamples / 1e6 : 0.,
                     feedbackSamples ? double(feedbackLatencyNs) / feedbackSamples / 1e6 : 0.,
                     presentationClockId);
@@ -208,6 +215,7 @@ struct PresentationTracker::Impl
             seqZero = seqValid = vsynced = hwClock = hwCompletion = zeroCopy = 0;
             timeMissedRefresh = timeParityErrors = timeUncertainGaps = timeGapCycles = 0;
             swapToPresentSumNs = swapToPresentMaxNs = swapToPresentSamples = 0;
+            swapAfterPresent = 0;
             feedbackSamples = feedbackLatencyNs = 0;
             feedbackOverflow = 0;
             actualPresentationGapNs = maxPresentationGapNs = 0;
