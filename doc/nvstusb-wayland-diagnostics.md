@@ -259,3 +259,44 @@ decoding or USB is the cause. If the handler regularly takes several
 milliseconds, investigate frame mapping/copying and Qt Multimedia
 thread affinity next. These are CPU wall-clock durations, not GPU
 timestamps.
+
+## v5: synchronous new-frame handling is the large cost
+
+The `BINO_PROFILE_VIDEO_SINK=1` experiment on a 23.98 fps Half-SBS
+video produced 14 sets of 120 input frames (1680 frames total):
+
+- `handler_avg` ~11.65 ms, and virtually all of this time was spent in
+  `VideoFrame::update()` (`update_avg` ~11.65 ms)
+- 1431/1680 (~85.2%) input-frame processing calls lasted >8 ms
+- `paintGL()` was normally <1 ms, and Qt swap callbacks still
+  averaged only ~100.6 Hz
+
+This indicates **expensive processing prior to `paintGL()`**.
+Within `VideoFrame::update()`, potential blocking points are
+unmapping the old `QVideoFrame`, replacing its implicit shared
+handle, mapping the new frame with `QVideoFrame::ReadOnly`,
+or pixel-format fallback conversion.
+
+To identify the actual operation, update Bino and rerun the identical
+dry-run, this time with *both* profiling variables:
+
+```sh
+BINO_PROFILE_VIDEO_SINK=1 BINO_PROFILE_VIDEO_FRAME=1 \
+QT_QPA_PLATFORM=wayland ./build/bino \
+  --input=left-right-half --output=alternating --fullscreen \
+  --nvstusb --nvstusb-dry-run --nvstusb-stats \
+  --nvstusb-ignore-video-wakeups \
+  "/path/to/23.98fps-half-sbs.mkv" \
+  2>&1 | tee /tmp/bino-dry-v6.log
+```
+
+`bino: video_frame stats:` prints a report per 120 calls including:
+`mapped`, `images`, `map_failed`, `total_avg/max`,
+`unmap_avg/max`, `assign_avg/max`, `map_avg/max`,
+`image_avg/max`, and `other_avg`.
+
+`bino: video_sink stats` now additionally reports `gui_thread` so we
+can establish whether a slow decoder-frame handler is blocking the Qt
+GUI event loop. All timers measure CPU-side wall-clock elapsed time;
+the operation timing is observational only. No asynchronous frame
+queue or alternative buffer ownership strategy has been enabled yet.
