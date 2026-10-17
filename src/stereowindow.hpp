@@ -26,6 +26,7 @@
 
 #include "modes.hpp"
 #include "bino.hpp"
+#include "waylandpresentation.hpp"
 
 
 class NvstusbController;
@@ -36,6 +37,7 @@ Q_OBJECT
 
 private:
     QTimer _updateTimer;
+    PresentationTracker _presentation;
     int _width = 1, _height = 1;
     float _lastFrameRelWidth, _lastFrameRelHeight;
 
