@@ -23,7 +23,7 @@ struct PresentationTracker::Impl
 {
     struct Sample {
         Impl* owner;
-        wp_presentation_feedback* feedback;
+        struct wp_presentation_feedback* feedback;
         int eye;
         QElapsedTimer requested;
     };
@@ -60,8 +60,8 @@ struct PresentationTracker::Impl
         self->presentationClockId = static_cast<int>(id);
         std::fprintf(stderr, "bino: wayland-presentation clock_id=%u\n", id);
     }
-    static void output(void*, wp_presentation_feedback*, wl_output*) {}
-    static void shown(void* data, wp_presentation_feedback*,
+    static void output(void*, struct wp_presentation_feedback*, wl_output*) {}
+    static void shown(void* data, struct wp_presentation_feedback*,
                       uint32_t timeHi, uint32_t timeLo, uint32_t nsec,
                       uint32_t refresh, uint32_t seqHi, uint32_t seqLo, uint32_t)
     {
@@ -70,7 +70,7 @@ struct PresentationTracker::Impl
         const uint64_t whenNs = ((uint64_t(timeHi) << 32) | timeLo) * 1000000000ull + nsec;
         sample->owner->complete(sample, true, seq, refresh, whenNs);
     }
-    static void dropped(void* data, wp_presentation_feedback*)
+    static void dropped(void* data, struct wp_presentation_feedback*)
     {
         auto* sample = static_cast<Sample*>(data);
         sample->owner->complete(sample, false, 0, 0, 0);
