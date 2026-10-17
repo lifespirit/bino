@@ -213,7 +213,8 @@ public:
             int* viewWidth = nullptr,
             int* viewHeight = nullptr,
             float* frameDisplayAspectRatio = nullptr,
-            bool* surround = nullptr);
+            bool* surround = nullptr,
+            bool* newVideoFrameUploaded = nullptr);
     void render(
             const QVector3D& unitedScreenBottomLeft, const QVector3D& unitedScreenBottomRight, const QVector3D& unitedScreenTopLeft,
             const QVector3D& intersectedScreenBottomLeft, const QVector3D& intersectedScreenBottomRight, const QVector3D& intersectedScreenTopLeft,
