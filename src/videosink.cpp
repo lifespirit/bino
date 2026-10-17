@@ -102,13 +102,15 @@ void VideoSink::processNewFrame(const QVideoFrame& frame)
         updateExtFrame = false;
         needExtFrame = false;
     }
+    const qint64 updateStartNs = _profileFrameProcessing ? profileClock.nsecsElapsed() : 0;
     if (updateExtFrame) {
         this->extFrame->update(inputMode, surroundMode, frame, frameCounter == 0);
     } else {
         this->frame->update(inputMode, surroundMode, frame, frameCounter == 0);
         this->extFrame->invalidate();
     }
-    const qint64 updateNs = _profileFrameProcessing ? profileClock.nsecsElapsed() : 0;
+    const qint64 updateNs = _profileFrameProcessing
+            ? profileClock.nsecsElapsed() - updateStartNs : 0;
     if (!needExtFrame) {
         LOG_FIREHOSE("video sink signals that new frame is complete");
         *frameIsNew = true;
