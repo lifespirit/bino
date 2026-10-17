@@ -24,6 +24,8 @@
 #include <QThread>
 #include <QtGlobal>
 #include <cstdio>
+#include <memory>
+#include <utility>
 
 #include "videosink.hpp"
 #include "log.hpp"
@@ -40,10 +42,89 @@ VideoSink::VideoSink(VideoFrame* frame, VideoFrame* extFrame, bool* frameIsNew) 
     lastFrameWasValid(false)
 {
     _profileFrameProcessing = qEnvironmentVariableIntValue("BINO_PROFILE_VIDEO_SINK") != 0;
+    _asyncMap = qEnvironmentVariableIntValue("BINO_ASYNC_VIDEO_MAP") != 0;
+    if (_asyncMap) {
+        _asyncWorker = new QObject;
+        _asyncWorker->moveToThread(&_asyncThread);
+        connect(&_asyncThread, &QThread::finished, _asyncWorker, &QObject::deleteLater);
+        _asyncThread.start();
+        std::fprintf(stderr,
+                "bino: video_sink: EXPERIMENTAL async QVideoFrame mapping enabled; "
+                "dropping stale frames when the worker is busy\n");
+    }
     if (_profileFrameProcessing)
         std::fprintf(stderr,
                 "bino: video_sink profile enabled (measures processNewFrame(), before paintGL)\n");
     connect(this, SIGNAL(videoFrameChanged(const QVideoFrame&)), this, SLOT(processNewFrame(const QVideoFrame&)));
+}
+
+VideoSink::~VideoSink()
+{
+    if (_asyncWorker) {
+        _asyncThread.quit();
+        _asyncThread.wait();
+        // QObject::deleteLater is handled by QThread::finished; no
+        // worker can refer to this VideoSink after wait() returns.
+    }
+}
+
+// Prepare video pixels off the GUI thread. The mapped pixel pointers
+// cannot outlive QVideoFrame::unmap(), so we copy them before posting the
+// completed frame back to the event loop.
+void VideoSink::dispatchAsyncFrame(AsyncFrameRequest request)
+{
+    Q_ASSERT(_asyncWorker && !_asyncBusy);
+    _asyncBusy = true;
+    QMetaObject::invokeMethod(_asyncWorker,
+            [this, request = std::move(request)]() mutable {
+        auto prepared = std::make_shared<VideoFrame>();
+        prepared->update(request.inputMode, request.surroundMode,
+                request.frame, request.newSource);
+        bool usable = true;
+        if (prepared->storage == VideoFrame::Storage_Mapped) {
+            usable = prepared->qframe.isMapped();
+            if (usable) {
+                for (int p = 0; p < prepared->planeCount; ++p) {
+                    const uchar* data = prepared->mappedBits[p];
+                    const int n = prepared->bytesPerPlane[p];
+                    if (!data || n <= 0) {
+                        usable = false;
+                        break;
+                    }
+                    prepared->bits[p].assign(data, data + n);
+                }
+            }
+            if (prepared->qframe.isMapped())
+                prepared->qframe.unmap();
+            for (int p = 0; p < 3; ++p)
+                prepared->mappedBits[p] = nullptr;
+            if (usable)
+                prepared->storage = VideoFrame::Storage_Copied;
+        }
+
+        QMetaObject::invokeMethod(this,
+                [this, prepared, usable, generation = request.generation]() mutable {
+            if (generation == _asyncGeneration && usable) {
+                if (frame->qframe.isMapped())
+                    frame->qframe.unmap();
+                *frame = std::move(*prepared);
+                extFrame->invalidate();
+                *frameIsNew = true;
+                ++_asyncDelivered;
+                emit newVideoFrame();
+            } else if (generation == _asyncGeneration && !usable) {
+                std::fprintf(stderr,
+                        "bino: video_sink: async frame mapping failed, keeping previous frame\n");
+            }
+
+            _asyncBusy = false;
+            if (_asyncPending) {
+                AsyncFrameRequest next = std::move(*_asyncPending);
+                _asyncPending.reset();
+                dispatchAsyncFrame(std::move(next));
+            }
+        }, Qt::QueuedConnection);
+    }, Qt::QueuedConnection);
 }
 
 // called whenever new media is played:
@@ -51,6 +132,9 @@ void VideoSink::newPlaylistEntry(const PlaylistEntry& entry, const MetaData& met
 {
     frameCounter = 0;
     lastFrameWasValid = false;
+    // The in-flight frame can finish, but its generation will not match.
+    ++_asyncGeneration;
+    _asyncPending.reset();
 
     int vt = entry.videoTrack;
     if (vt < 0)
@@ -86,6 +170,24 @@ void VideoSink::processNewFrame(const QVideoFrame& frame)
     if (frame.isValid()) {
         LOG_FIREHOSE("video sink gets a valid frame");
         lastFrameWasValid = true;
+    }
+
+    // In normal SBS/TB modes, only one decoded frame represents both eyes.
+    // The original two-frame input-alternating mode is deliberately not
+    // modified by this experiment.
+    if (_asyncMap && frame.isValid()
+            && inputMode != Input_Alternating_LR
+            && inputMode != Input_Alternating_RL) {
+        AsyncFrameRequest request{frame, inputMode, surroundMode,
+                                  frameCounter == 0, _asyncGeneration};
+        ++frameCounter;
+        if (_asyncBusy) {
+            _asyncPending = std::move(request);
+            ++_asyncSkipped;
+        } else {
+            dispatchAsyncFrame(std::move(request));
+        }
+        return;
     }
 
     bool updateExtFrame;
