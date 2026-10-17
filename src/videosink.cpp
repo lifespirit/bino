@@ -19,6 +19,9 @@
  */
 
 #include <QUrl>
+#include <QElapsedTimer>
+#include <QtGlobal>
+#include <cstdio>
 
 #include "videosink.hpp"
 #include "log.hpp"
@@ -34,6 +37,10 @@ VideoSink::VideoSink(VideoFrame* frame, VideoFrame* extFrame, bool* frameIsNew) 
     surroundMode(Surround_Unknown),
     lastFrameWasValid(false)
 {
+    _profileFrameProcessing = qEnvironmentVariableIntValue("BINO_PROFILE_VIDEO_SINK") != 0;
+    if (_profileFrameProcessing)
+        std::fprintf(stderr,
+                "bino: video_sink profile enabled (measures processNewFrame(), before paintGL)\n");
     connect(this, SIGNAL(videoFrameChanged(const QVideoFrame&)), this, SLOT(processNewFrame(const QVideoFrame&)));
 }
 
@@ -63,6 +70,10 @@ void VideoSink::newPlaylistEntry(const PlaylistEntry& entry, const MetaData& met
 
 void VideoSink::processNewFrame(const QVideoFrame& frame)
 {
+    QElapsedTimer profileClock;
+    if (_profileFrameProcessing)
+        profileClock.start();
+
     if (!frame.isValid() && lastFrameWasValid) {
         // keep showing the last frame of the current media; ignore that QtMultiMedia
         // with the FFmpeg backend gives us an invalid frame as soon as the media stops
@@ -97,10 +108,50 @@ void VideoSink::processNewFrame(const QVideoFrame& frame)
         this->frame->update(inputMode, surroundMode, frame, frameCounter == 0);
         this->extFrame->invalidate();
     }
+    const qint64 updateNs = _profileFrameProcessing ? profileClock.nsecsElapsed() : 0;
     if (!needExtFrame) {
         LOG_FIREHOSE("video sink signals that new frame is complete");
         *frameIsNew = true;
         emit newVideoFrame();
     }
     frameCounter++;
+
+    if (_profileFrameProcessing) {
+        const qint64 elapsedNs = profileClock.nsecsElapsed();
+        ++_processSamples;
+        _processTotalNs += elapsedNs;
+        _updateTotalNs += updateNs;
+        if (elapsedNs > _processMaxNs)
+            _processMaxNs = elapsedNs;
+        if (updateNs > _updateMaxNs)
+            _updateMaxNs = updateNs;
+        if (elapsedNs > 1000000LL)
+            ++_processSlow1ms;
+        if (elapsedNs > 4000000LL)
+            ++_processSlow4ms;
+        if (elapsedNs > 8000000LL)
+            ++_processSlow8ms;
+
+        if (_processSamples >= 120) {
+            std::fprintf(stderr,
+                    "bino: video_sink stats: frames=%d "
+                    "handler_avg=%.3fms handler_max=%.3fms "
+                    "update_avg=%.3fms update_max=%.3fms "
+                    "handler_gt1ms=%d gt4ms=%d gt8ms=%d\n",
+                    _processSamples,
+                    double(_processTotalNs) / _processSamples / 1e6,
+                    double(_processMaxNs) / 1e6,
+                    double(_updateTotalNs) / _processSamples / 1e6,
+                    double(_updateMaxNs) / 1e6,
+                    _processSlow1ms, _processSlow4ms, _processSlow8ms);
+            _processSamples = 0;
+            _processSlow1ms = 0;
+            _processSlow4ms = 0;
+            _processSlow8ms = 0;
+            _processTotalNs = 0;
+            _processMaxNs = 0;
+            _updateTotalNs = 0;
+            _updateMaxNs = 0;
+        }
+    }
 }
