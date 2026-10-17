@@ -33,32 +33,44 @@ NvstusbController::~NvstusbController()
 }
 
 bool NvstusbController::start(const QString& firmware, float rate, int phaseMs,
-                              bool invert, Trigger trigger, bool stats)
+                              bool invert, Trigger trigger, bool stats, bool dryRun)
 {
+    if (_active || rate <= 60.0f || phaseMs < 0 || phaseMs > 7)
+        return false;
+
 #ifdef WITH_NVSTUSB
-    if (_ctx)
-        return false;
-    if (rate <= 60.0f || phaseMs < 0 || phaseMs > 7)
-        return false;
+    if (!dryRun) {
+        const QByteArray file = firmware.toLocal8Bit();
+        _ctx = nvstusb_init(file.isEmpty() ? nullptr : file.constData());
+        if (!_ctx) {
+            std::fprintf(stderr, "bino: nvstusb: unable to initialize USB emitter\n");
+            return false;
+        }
 
-    const QByteArray file = firmware.toLocal8Bit();
-    _ctx = nvstusb_init(file.isEmpty() ? nullptr : file.constData());
-    if (!_ctx) {
-        std::fprintf(stderr, "bino: nvstusb: unable to initialize USB emitter\n");
+        nvstusb_set_rate(_ctx, rate);
+        const int error = nvstusb_last_error(_ctx);
+        if (error != 0) {
+            std::fprintf(stderr,
+                    "bino: nvstusb: failed to program refresh rate (USB %d)\n", error);
+            nvstusb_deinit(_ctx);
+            _ctx = nullptr;
+            return false;
+        }
+        if (invert)
+            nvstusb_invert_eyes(_ctx);
+    }
+#else
+    Q_UNUSED(firmware);
+    Q_UNUSED(invert);
+    if (!dryRun) {
+        std::fprintf(stderr,
+                "bino: nvstusb: this binary was built without ENABLE_NVSTUSB\n");
         return false;
     }
+#endif
 
-    nvstusb_set_rate(_ctx, rate);
-    const int error = nvstusb_last_error(_ctx);
-    if (error != 0) {
-        std::fprintf(stderr, "bino: nvstusb: failed to program refresh rate (USB %d)\n", error);
-        nvstusb_deinit(_ctx);
-        _ctx = nullptr;
-        return false;
-    }
-    if (invert)
-        nvstusb_invert_eyes(_ctx);
-
+    _active = true;
+    _dryRun = dryRun;
     _phaseMs = phaseMs;
     _trigger = trigger;
     _stats = stats;
@@ -76,28 +88,33 @@ bool NvstusbController::start(const QString& firmware, float rate, int phaseMs,
     _replacedCommands = 0;
     _lastEye = -1;
     _sameEyeCount = 0;
+    _paintCount = 0;
+    _composeCount = 0;
+    _swapCount = 0;
+    _paintsSinceCompose = 0;
+    _compositionsWithoutPaint = 0;
+    _coalescedPaints = 0;
+    _samePaintEyeCount = 0;
+    _lastPaintEye = -1;
+    _lastPaintNs = -1;
+    _paintIntervalsNs = 0;
+    _maxPaintIntervalNs = 0;
+    _paintIntervalCount = 0;
 
     std::fprintf(stderr,
-            "bino: nvstusb: initialized at %.2f Hz, trigger %s, phase %d ms, invert %s, stats %s\n"
-            "bino: nvstusb: Qt callbacks are NOT physical display presentation timestamps\n",
+            "bino: nvstusb: %s at %.2f Hz, trigger %s, phase %d ms, "
+            "invert %s, stats %s\n"
+            "bino: nvstusb: Qt paint/compose/swap events are NOT hardware "
+            "presentation timestamps\n",
+            dryRun ? "DRY RUN (no USB opened)" : "initialized",
             rate, trigger == Trigger::Compose ? "compose" : "swap",
             phaseMs, invert ? "yes" : "no", stats ? "yes" : "no");
     return true;
-#else
-    Q_UNUSED(firmware);
-    Q_UNUSED(rate);
-    Q_UNUSED(phaseMs);
-    Q_UNUSED(invert);
-    Q_UNUSED(trigger);
-    Q_UNUSED(stats);
-    std::fprintf(stderr, "bino: nvstusb: this binary was built without ENABLE_NVSTUSB\n");
-    return false;
-#endif
 }
 
 bool NvstusbController::enabled() const
 {
-    return _ctx != nullptr;
+    return _active;
 }
 
 bool NvstusbController::beforeComposition() const
@@ -105,9 +122,49 @@ bool NvstusbController::beforeComposition() const
     return _trigger == Trigger::Compose;
 }
 
+void NvstusbController::onFramePainted(int eye)
+{
+    if (!_active || !_stats || (eye != 0 && eye != 1))
+        return;
+    const qint64 now = _clock.nsecsElapsed();
+    ++_paintCount;
+    ++_paintsSinceCompose;
+    if (_lastPaintNs >= 0) {
+        const qint64 delta = now - _lastPaintNs;
+        _paintIntervalsNs += delta;
+        ++_paintIntervalCount;
+        if (delta > _maxPaintIntervalNs)
+            _maxPaintIntervalNs = delta;
+    }
+    _lastPaintNs = now;
+    if (_lastPaintEye == eye)
+        ++_samePaintEyeCount;
+    _lastPaintEye = eye;
+}
+
+void NvstusbController::onQtComposing()
+{
+    if (!_active || !_stats)
+        return;
+    ++_composeCount;
+    if (_paintsSinceCompose == 0)
+        ++_compositionsWithoutPaint;
+    if (_paintsSinceCompose > 1)
+        _coalescedPaints += _paintsSinceCompose - 1;
+    _paintsSinceCompose = 0;
+}
+
+void NvstusbController::onQtSwapped()
+{
+    if (!_active || !_stats)
+        return;
+    ++_swapCount;
+    reportStatsIfDue(_clock.nsecsElapsed());
+}
+
 void NvstusbController::onFrameReady(int eye)
 {
-    if (!_ctx || (eye != 0 && eye != 1))
+    if (!_active || (eye != 0 && eye != 1))
         return;
 
     if (_stats) {
@@ -120,8 +177,8 @@ void NvstusbController::onFrameReady(int eye)
             if (delta > _maxDeltaNs)
                 _maxDeltaNs = delta;
 
-            // Diagnostics only: Qt callback intervals >1.5 nominal refresh periods
-            // are suspicious but do not prove a dropped physical display frame.
+            // Intervals >1.5 nominal refresh periods are suspicious, but
+            // cannot prove a missed hardware presentation.
             if (double(delta) > (1.5e9 / double(_rate)))
                 ++_lateCount;
         }
@@ -129,7 +186,6 @@ void NvstusbController::onFrameReady(int eye)
         if (_lastEye == eye)
             ++_sameEyeCount;
         _lastEye = eye;
-        reportStatsIfDue(now);
     }
 
     if (_pendingEye >= 0)
@@ -146,12 +202,21 @@ void NvstusbController::onFrameReady(int eye)
 
 void NvstusbController::sendPendingEye()
 {
-#ifdef WITH_NVSTUSB
-    if (!_ctx || _pendingEye < 0)
+    if (!_active || _pendingEye < 0)
         return;
 
     const int eye = _pendingEye;
     _pendingEye = -1;
+
+    if (_dryRun) {
+        if (_stats)
+            ++_usbCommandCount; // Simulated command, no USB transfer.
+        return;
+    }
+
+#ifdef WITH_NVSTUSB
+    if (!_ctx)
+        return;
 
     const qint64 begin = _stats ? _clock.nsecsElapsed() : 0;
     const int error = nvstusb_send_eye(_ctx, eye == 0 ? nvstusb_left : nvstusb_right);
@@ -169,11 +234,14 @@ void NvstusbController::sendPendingEye()
         _phaseTimer.stop();
         nvstusb_deinit(_ctx);
         _ctx = nullptr;
+        _active = false;
     }
+#else
+    Q_UNUSED(eye);
 #endif
 }
 
-void NvstusbController::reportStatsIfDue(qint64 now)
+void NvstusbController::reportStatsIfDue(
 {
     if (now - _windowStartNs < 5000000000LL)
         return;
@@ -182,15 +250,26 @@ void NvstusbController::reportStatsIfDue(qint64 now)
     const double hz = elapsed > 0.0 ? double(_callbackCount) / elapsed : 0.0;
     const double avgDeltaMs = _intervalCount > 0
             ? double(_deltaTotalNs) / double(_intervalCount) / 1e6 : 0.0;
+    const double paintHz = elapsed > 0.0 ? double(_paintCount) / elapsed : 0.0;
+    const double composeHz = elapsed > 0.0 ? double(_composeCount) / elapsed : 0.0;
+    const double swapHz = elapsed > 0.0 ? double(_swapCount) / elapsed : 0.0;
+    const double paintAvgMs = _paintIntervalCount > 0
+            ? double(_paintIntervalsNs) / double(_paintIntervalCount) / 1e6 : 0.0;
 
     std::fprintf(stderr,
-            "bino: nvstusb stats: trigger=%s callbacks=%d (%.1f Hz) "
-            "interval_avg=%.2fms max=%.2fms late(>1.5period)=%d "
-            "same_eye=%d usb_sent=%d usb_max=%.2fms replaced=%d\n",
+            "bino: nvstusb stats: trigger=%s%s "
+            "paint=%d(%.1fHz avg=%.2fms max=%.2fms same_eye=%d) "
+            "compose=%d(%.1fHz no_new_paint=%d coalesced=%d) "
+            "swap=%d(%.1fHz) callbacks=%d(%.1fHz avg=%.2fms max=%.2fms "
+            "late=%d same_eye=%d) commands=%d usb_max=%.2fms replaced=%d\n",
             _trigger == Trigger::Compose ? "compose" : "swap",
-            _callbackCount, hz, avgDeltaMs, double(_maxDeltaNs) / 1e6,
-            _lateCount, _sameEyeCount, _usbCommandCount,
-            double(_maxUsbNs) / 1e6, _replacedCommands);
+            _dryRun ? "/dry-run" : "",
+            _paintCount, paintHz, paintAvgMs, double(_maxPaintIntervalNs) / 1e6,
+            _samePaintEyeCount, _composeCount, composeHz,
+            _compositionsWithoutPaint, _coalescedPaints,
+            _swapCount, swapHz, _callbackCount, hz, avgDeltaMs,
+            double(_maxDeltaNs) / 1e6, _lateCount, _sameEyeCount,
+            _usbCommandCount, double(_maxUsbNs) / 1e6, _replacedCommands);
 
     _windowStartNs = now;
     _callbackCount = 0;
@@ -202,4 +281,13 @@ void NvstusbController::reportStatsIfDue(qint64 now)
     _usbCommandCount = 0;
     _maxUsbNs = 0;
     _replacedCommands = 0;
+    _paintCount = 0;
+    _composeCount = 0;
+    _swapCount = 0;
+    _compositionsWithoutPaint = 0;
+    _coalescedPaints = 0;
+    _samePaintEyeCount = 0;
+    _paintIntervalsNs = 0;
+    _maxPaintIntervalNs = 0;
+    _paintIntervalCount = 0;
 }
