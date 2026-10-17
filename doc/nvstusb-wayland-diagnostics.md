@@ -167,3 +167,57 @@ and compositor scheduling can introduce delays outside these boundaries.
 A correlation with `video_new` does not prove the upload alone is slow.
 If both new and cached paints are fast but the intervals are late,
 investigate Qt/KWin's render/composition/pacing and GPU execution.
+
+## Experiment: decouple movie-frame wakeups from 120 Hz alternating redraws
+
+An approximately two-minute dry-run with a 23.98 fps movie showed
+approximately 105 Hz Qt paint callbacks despite individual
+`paintGL()` CPU measurements generally being below 1 ms.
+
+Of 2755 paints that uploaded a **new** decoded frame, 2669 (96.9%)
+followed a paint-to-paint interval longer than 1.5 nominal 120 Hz
+periods. Only 362 of 9355 (3.9%) cached-frame paints were late.
+This is correlation, not proof that the decoder's `newVideoFrame`
+signal causes the missed display refreshes.
+
+By default, two independent sources call `Widget::update()`:
+the `newVideoFrame` signal from Qt Multimedia (at roughly 24 Hz)
+and the self-scheduling alternating redraw loop inside `paintGL()`.
+
+To isolate these sources, compare two dry-run tests on the same
+movie, monitor refresh rate and fullscreen mode:
+
+**Baseline:**
+
+```sh
+QT_QPA_PLATFORM=wayland ./build/bino --input=left-right-half \
+  --output=alternating --fullscreen --nvstusb --nvstusb-dry-run \
+  --nvstusb-stats "/path/to/23.98fps-half-sbs.mkv" \
+  2>&1 | tee /tmp/bino-baseline.log
+```
+
+**Experimental suppression:**
+
+```sh
+QT_QPA_PLATFORM=wayland ./build/bino --input=left-right-half \
+  --output=alternating --fullscreen --nvstusb --nvstusb-dry-run \
+  --nvstusb-stats --nvstusb-ignore-video-wakeups \
+  "/path/to/23.98fps-half-sbs.mkv" \
+  2>&1 | tee /tmp/bino-no-video-wakeup.log
+```
+
+The experimental flag is **dry-run-only** and does not open the
+USB emitter. Decoded frames still update Bino's video data and are
+uploaded on the next alternating paint. The flag only suppresses
+the extra `update()` call triggered by `newVideoFrame`, **after**
+the self-sustaining stereo render loop has started. New-media and
+non-stereo cases still use normal wakeups.
+
+Compare `paint`, `callbacks`, `paint_late_new`,
+`paint_late_cached` and `ignored_video_wakeups`; the last count
+should roughly match decoded movie frames received during active
+stereo playback. If timing improves, prioritize frame pacing
+and a frame-accurate presentation mechanism before changing the
+libnvstusb firmware timings. Even if timing does not improve,
+Qt presentation timing must still be investigated before claiming
+that physical shutters are synchronized with the displayed eyes.
