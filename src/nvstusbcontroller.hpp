@@ -30,7 +30,8 @@ public:
     bool enabled() const;
     bool beforeComposition() const;
     void onFrameReady(int eye);
-    void onFramePainted(int eye);
+    void onFramePainted(int eye, bool newVideoFrameUploaded,
+                        qint64 preRenderNs, qint64 paintCpuNs);
     void onQtComposing();
     void onQtSwapped();
 
@@ -80,4 +81,11 @@ private:
     qint64 _paintIntervalsNs = 0;
     qint64 _maxPaintIntervalNs = 0;
     int _paintIntervalCount = 0;
+    // Distinguish expensive new video-frame uploads from cached-frame draws.
+    int _paintTypeCount[2] = {0, 0}; // 0 = reused video frame, 1 = new upload
+    qint64 _preRenderTypeTotalNs[2] = {0, 0};
+    qint64 _preRenderTypeMaxNs[2] = {0, 0};
+    qint64 _paintCpuTypeTotalNs[2] = {0, 0};
+    qint64 _paintCpuTypeMaxNs[2] = {0, 0};
+    int _paintLateTypeCount[2] = {0, 0};
 };
