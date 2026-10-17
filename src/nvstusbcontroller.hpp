@@ -30,6 +30,7 @@ public:
     bool enabled() const;
     void setIgnoreVideoWakeups(bool enabled) { _ignoreVideoWakeups = enabled; }
     bool ignoreVideoWakeups() const { return _ignoreVideoWakeups; }
+    void noteSuppressedVideoWakeup();
     bool beforeComposition() const;
     void onFrameReady(int eye);
     void onFramePainted(int eye, bool newVideoFrameUploaded,
@@ -78,6 +79,7 @@ private:
     int _paintsSinceCompose = 0;
     int _compositionsWithoutPaint = 0;
     int _coalescedPaints = 0;
+    int _suppressedVideoWakeups = 0;
     int _samePaintEyeCount = 0;
     int _lastPaintEye = -1;
     qint64 _lastPaintNs = -1;
