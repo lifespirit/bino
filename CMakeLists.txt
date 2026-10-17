@@ -16,7 +16,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 
 # Required: Qt6
-find_package(Qt6 6.7.0 REQUIRED COMPONENTS OpenGLWidgets Multimedia LinguistTools)
+find_package(Qt6 6.7.0 REQUIRED COMPONENTS OpenGL OpenGLWidgets Multimedia LinguistTools)
 
 # Experimental USB shutter control (off by default; no NVIDIA GPU required).
 option(ENABLE_NVSTUSB "Build experimental NVIDIA 3D Vision USB support" OFF)
@@ -63,6 +63,7 @@ add_executable(bino
 	src/bino.hpp src/bino.cpp
 	src/qvrapp.hpp src/qvrapp.cpp
 	src/widget.hpp src/widget.cpp
+	src/stereowindow.hpp src/stereowindow.cpp
 	src/nvstusbcontroller.hpp src/nvstusbcontroller.cpp
 	src/commandinterpreter.hpp src/commandinterpreter.cpp
 	src/playlisteditor.hpp src/playlisteditor.cpp
@@ -88,7 +89,7 @@ qt6_add_resources(bino "misc" PREFIX "/" FILES
 	res/bino-logo-small-512.png
 	res/bino-fallback-frame.png)
 set_target_properties(bino PROPERTIES WIN32_EXECUTABLE TRUE)
-target_link_libraries(bino PRIVATE Qt6::OpenGLWidgets Qt6::Multimedia ${QVR_LIBRARIES})
+target_link_libraries(bino PRIVATE Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Multimedia ${QVR_LIBRARIES})
 if(ENABLE_NVSTUSB)
     target_compile_definitions(bino PRIVATE WITH_NVSTUSB)
     if(NVSTUSB_SOURCE_DIR)
