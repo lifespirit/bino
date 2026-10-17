@@ -605,3 +605,75 @@ considered. The framebuffer may remain visible through a skipped
 refresh, so `time_eye_parity_errors` should not be interpreted as
 hardware shutter measurements; it is a diagnostic comparison
 against the expected alternating display-slot phase.
+
+## Native v2: full timestamp observability, but unexpected ~60 Hz regression
+
+The second native test confirms that the KWin `wp_presentation`
+`seq` field is consistently **zero**: every window reported
+`seq_zero=600 seq_valid=0`. KWin did advertise VSYNC,
+hardware clock and hardware completion flags. Therefore the
+MSC-derived `skipped_vblanks=0` and `eye_parity_errors=0`
+are **not meaningful** on this machine; use timestamp-derived
+counters `time_missed_refresh` and `time_eye_parity_errors`
+instead.
+
+However the v2 process behaved dramatically differently from
+the first native v1 run: **23 five-second windows average 59.8 Hz**
+(range 53.4 to 67.6 Hz), compared with native v1
+~118.6 Hz after startup. Over 11 reporting batches of 600 actual
+presentations, KWin confirmed 6,622 unpainted physical refresh
+cycles and 3,768 expected-stereo-eye parity mismatches.
+Typical `present_gap_avg` rose to ~16.70ms (two 120 Hz slots).
+`swap_to_present_avg` averaged ~20.4ms, but varies across runs;
+the USB real-eye phase cannot be inferred reliably yet. Typical
+GL rendering itself was still fast (~0.2ms cached and ~1.1ms
+new video frames). This is not a stable baseline for active
+shutter testing and must not be used with real glasses.
+
+We **cannot yet attribute** the 60 Hz slowdown solely to the
+more extensive instrumentation. It may be scheduling variation,
+the Wayland observer, EGL swap pacing or compositor behavior.
+The next commit adds two independent native-only A/B controls:
+
+- `BINO_NATIVE_FEEDBACK=0`: disables *all* client
+  `wp_presentation` requests and the initial Wayland roundtrip.
+  Default 1 retains full observation.
+- `BINO_NATIVE_PACING=paint`: asks Qt for the next alternating
+  repaint at the end of `paintGL`, instead of after the native
+  `frameSwapped` signal. Default `swap` is Qt's documented
+  continuous-rendering pattern; `paint` is a potentially unsafe
+  exploratory pacing mode and **never for active glasses**.
+
+Run the same short `--nvstusb-dry-run` media experiment in both
+conditions and compare `nvstusb stats paint=...`, `late=...`.
+Only enable full presentation feedback for the second test:
+
+```sh
+# A: no protocol observer; native Qt frameSwapped pacing
+BINO_NATIVE_FEEDBACK=0 BINO_NATIVE_PACING=swap BINO_ASYNC_VIDEO_MAP=1 \
+QT_QPA_PLATFORM=wayland ./build/bino \
+ --input=left-right-half --output=alternating --fullscreen \
+ --nvstusb --nvstusb-native-window --nvstusb-dry-run --nvstusb-stats \
+ "$HOME/Веном_Venom (2018) BDRip.Half-SBS.1080p.NNMClub.mkv" \
+ 2>&1 | tee /tmp/bino-native-ab-off.log
+
+# B: observer on, same pacing (v2 control)
+BINO_NATIVE_FEEDBACK=1 BINO_NATIVE_PACING=swap BINO_ASYNC_VIDEO_MAP=1 \
+QT_QPA_PLATFORM=wayland ./build/bino \
+ --input=left-right-half --output=alternating --fullscreen \
+ --nvstusb --nvstusb-native-window --nvstusb-dry-run --nvstusb-stats \
+ "$HOME/Веном_Venom (2018) BDRip.Half-SBS.1080p.NNMClub.mkv" \
+ 2>&1 | tee /tmp/bino-native-ab-on.log
+
+# C: observer on, paintGL-paced experiment if A/B are inconclusive
+BINO_NATIVE_FEEDBACK=1 BINO_NATIVE_PACING=paint BINO_ASYNC_VIDEO_MAP=1 \
+QT_QPA_PLATFORM=wayland ./build/bino \
+ --input=left-right-half --output=alternating --fullscreen \
+ --nvstusb --nvstusb-native-window --nvstusb-dry-run --nvstusb-stats \
+ "$HOME/Веном_Venom (2018) BDRip.Half-SBS.1080p.NNMClub.mkv" \
+ 2>&1 | tee /tmp/bino-native-ab-paint.log
+```
+
+Avoid active glasses until the renderer can sustain near 120 Hz
+**actual presentation**, then design explicit phase-locked IR
+scheduling and recovery for missed display slots.
