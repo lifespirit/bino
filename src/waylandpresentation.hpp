@@ -16,6 +16,7 @@ public:
     ~PresentationTracker();
     bool start(QWindow* window);
     void beforeSwap(int eye);
+    void afterSwap();  // capture Qt swap-to-physical-presentation delay
     bool enabled() const;
 private:
     struct Impl;
