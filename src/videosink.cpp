@@ -75,11 +75,12 @@ void VideoSink::dispatchAsyncFrame(AsyncFrameRequest request)
 {
     Q_ASSERT(_asyncWorker && !_asyncBusy);
     _asyncBusy = true;
+    const auto job = std::make_shared<AsyncFrameRequest>(std::move(request));
     QMetaObject::invokeMethod(_asyncWorker,
-            [this, request = std::move(request)]() mutable {
+            [this, job]() {
         auto prepared = std::make_shared<VideoFrame>();
-        prepared->update(request.inputMode, request.surroundMode,
-                request.frame, request.newSource);
+        prepared->update(job->inputMode, job->surroundMode,
+                job->frame, job->newSource);
         bool usable = true;
         if (prepared->storage == VideoFrame::Storage_Mapped) {
             usable = prepared->qframe.isMapped();
@@ -103,7 +104,7 @@ void VideoSink::dispatchAsyncFrame(AsyncFrameRequest request)
         }
 
         QMetaObject::invokeMethod(this,
-                [this, prepared, usable, generation = request.generation]() mutable {
+                [this, prepared, usable, generation = job->generation]() mutable {
             if (generation == _asyncGeneration && usable) {
                 if (frame->qframe.isMapped())
                     frame->qframe.unmap();
@@ -111,6 +112,18 @@ void VideoSink::dispatchAsyncFrame(AsyncFrameRequest request)
                 extFrame->invalidate();
                 *frameIsNew = true;
                 ++_asyncDelivered;
+                if (_asyncDelivered % 120 == 0) {
+                    std::fprintf(stderr,
+                            "bino: video_sink async stats: delivered_total=%llu "
+                            "overwritten_pending_since_last=%llu "
+                            "gui_thread=%s\n",
+                            static_cast<unsigned long long>(_asyncDelivered),
+                            static_cast<unsigned long long>(_asyncSkipped),
+                            QCoreApplication::instance()
+                                && QThread::currentThread() == QCoreApplication::instance()->thread()
+                                    ? "yes" : "no");
+                    _asyncSkipped = 0;
+                }
                 emit newVideoFrame();
             } else if (generation == _asyncGeneration && !usable) {
                 std::fprintf(stderr,
