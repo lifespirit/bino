@@ -51,4 +51,18 @@ public Q_SLOTS:
 
 signals:
     void newVideoFrame();
+
+private:
+    // Optional wall-clock profiling of the videoFrameChanged handler.
+    // This runs before the next paintGL(), so its time is not included
+    // in the existing Bino/NVSTUSB paint timing measurements.
+    bool _profileFrameProcessing = false;
+    int _processSamples = 0;
+    int _processSlow1ms = 0;
+    int _processSlow4ms = 0;
+    int _processSlow8ms = 0;
+    qint64 _processTotalNs = 0;
+    qint64 _processMaxNs = 0;
+    qint64 _updateTotalNs = 0;
+    qint64 _updateMaxNs = 0;
 };
