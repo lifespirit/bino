@@ -222,6 +222,11 @@ void StereoWindow::initializeGL()
 
     // Initialize Bino
     Bino::instance()->initProcess();
+
+    // Presentation feedback is observational in this iteration. The
+    // compositor supplies timestamps only after physical presentation.
+    // Never use a late event to switch the shutters retroactively.
+    _presentation.start(this);
 }
 
 void StereoWindow::rebuildDisplayPrgIfNecessary(OutputMode outputMode)
@@ -401,7 +406,8 @@ void StereoWindow::paintGL()
     QPointF globalLowerLeft = mapToGlobal(QPointF(0, height - 1));
     _displayPrg.setUniformValue("fragOffsetX", float(globalLowerLeft.x()));
     _displayPrg.setUniformValue("fragOffsetY", float(screen()->geometry().height() - 1 - globalLowerLeft.y()));
-    LOG_FIREHOSE("lower left widget corner in screen coordinates: x=%d y=%d", globalLowerLeft.x(), screen()->geometry().height() - 1 - globalLowerLeft.y());
+    LOG_FIREHOSE("lower left native window corner in screen coordinates: x=%g y=%g",
+                 globalLowerLeft.x(), screen()->geometry().height() - 1 - globalLowerLeft.y());
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, _viewTex[0]);
     glActiveTexture(GL_TEXTURE1);
@@ -421,6 +427,11 @@ void StereoWindow::paintGL()
 
     if (_nvstusb)
         _nvstusb->onQtComposing();
+
+    // Must be requested before EGL swap commits the wl_surface. This
+    // associates the feedback with the upcoming surface content update.
+    if (_nvstusbRenderedEye >= 0)
+        _presentation.beforeSwap(_nvstusbRenderedEye);
 
     // Observe rendered eye; Qt swap != physical Wayland presentation.
     // This is a diagnostic observation, NOT a Wayland presentation event.
