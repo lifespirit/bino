@@ -23,6 +23,8 @@
 #include <QMessageBox>
 #include <QQuaternion>
 #include <QtMath>
+#include <QtGlobal>
+#include <cstdio>
 
 #include "widget.hpp"
 #include "nvstusbcontroller.hpp"
