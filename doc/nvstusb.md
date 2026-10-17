@@ -4,7 +4,11 @@ This fork integrates the original NVIDIA 3D Vision USB IR emitter
 (`0955:0007`) into Bino's `--output=alternating` mode on Linux.
 No NVIDIA GPU or NVIDIA display driver is required.
 
-**Status: experimental prototype, not validated on hardware yet.**
+**Status: early hardware success, intermittent eye/display desynchronization.**
+The user confirmed perceivable stereo 3D using this fork with the original
+NVIDIA USB IR emitter and Samsung Odyssey G7 under KDE Wayland (October 2026).
+Synchronization is still intermittent; neither USB success nor the visible
+3D effect establishes frame-accurate scanout/shutter timing.
 Neither `QOpenGLWidget::frameSwapped` nor the optional Qt delay
 guarantees correspondence with KWin's actual monitor scanout. The firmware
 must be supplied separately; no proprietary firmware is committed here.
@@ -67,6 +71,12 @@ LD_LIBRARY_PATH="$HOME/Projects/src/libnvstusb/src/.libs${LD_LIBRARY_PATH:+:$LD_
 ```
 
 Optional: `--nvstusb-invert` swaps the two shutters.
+`--nvstusb-trigger=swap` (default) sends commands after Qt composition.
+`--nvstusb-trigger=compose` sends commands just before Qt composition,
+which may improve or worsen alignment depending on the KWin/display path.
+`--nvstusb-stats` prints five-second summaries of callback frequency,
+late callbacks, duplicate-eye events and maximum USB write latency.
+Use these metrics to compare trigger modes, not as proof of scanout timing.
 `--nvstusb-phase=N` delays shutter commands 0-7 **integer milliseconds**
 after the Qt frameSwapped signal, using a Qt PreciseTimer. This delay is
 **not** a measured phase shift relative to physical vblank. Try 0 first.
@@ -78,7 +88,9 @@ The Bino movie file must be interpreted correctly (e.g. Full-SBS is
 
 - `Widget::paintGL()` captures which eye the renderer has actually drawn
   **before** advancing its alternating-view state.
-- `QOpenGLWidget::frameSwapped` notifies the USB controller of that eye.
+- A callback selected by `--nvstusb-trigger` (`aboutToCompose` or
+  `frameSwapped`) notifies the USB controller of that eye. The eye is
+  consumed once, so later unrelated Qt composition signals cannot resend it.
 - Controller sends a direct shutter command through `nvstusb_send_eye()`.
   It neither uses GLX nor a separate free-running 120 Hz thread.
 - USB failure disables the emitter and prints an error on standard error.
@@ -86,6 +98,31 @@ The Bino movie file must be interpreted correctly (e.g. Full-SBS is
   for up to the libnvstusb timeout (1 second on a failed transfer).
 - Qt and KWin can drop/merge frames, and the display may scan out long after
   the Qt callback. Consequently, full 3D lock is **not guaranteed**.
+
+## Compare composition triggers
+
+At 120 Hz and VRR disabled, run two otherwise identical Full-SBS tests
+while keeping the transmitter directly attached to the laptop:
+
+```sh
+# Existing behavior
+./build/bino --input=left-right --output=alternating --fullscreen \
+  --nvstusb --nvstusb-rate=120 --nvstusb-trigger=swap \
+  --nvstusb-phase=0 --nvstusb-stats \
+  --nvstusb-firmware="/path/to/nvstusb.fw" "/path/to/movie.mkv"
+
+# Earlier command relative to Qt buffer composition
+./build/bino --input=left-right --output=alternating --fullscreen \
+  --nvstusb --nvstusb-rate=120 --nvstusb-trigger=compose \
+  --nvstusb-phase=0 --nvstusb-stats \
+  --nvstusb-firmware="/path/to/nvstusb.fw" "/path/to/movie.mkv"
+```
+
+Compare perceived desynchronization and the printed `bino: nvstusb stats:`
+lines. For 120 Hz, an ideal interval is about 8.33 ms.
+A callback gap over 12.5 ms is logged as `late`, **not** a proven
+dropped display frame. Large `usb_max` means synchronous USB writes
+are blocking GUI processing. The phase delay is still approximate.
 
 ## Planned follow-up
 

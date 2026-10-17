@@ -58,11 +58,25 @@ Widget::Widget(OutputMode outputMode, float surroundVerticalFOV,
     setSurroundVerticalFieldOfView(surroundVerticalFOV);
     _surroundVerticalFOVDefault = _surroundVerticalFOV; // to make sure clamping was applied
     setUpdateBehavior(QOpenGLWidget::PartialUpdate);
-    // Delivered after Qt's buffer swap; NOT guaranteed physical scanout timing.
-    connect(this, &QOpenGLWidget::frameSwapped, this, [this]() {
-        if (_nvstusb && _nvstusbRenderedEye >= 0)
-            _nvstusb->onFrameSwapped(_nvstusbRenderedEye);
-    });
+    // Notify once per newly painted eye, never reuse the previous eye when Qt
+    // emits another composition signal without a fresh paintGL().
+    auto sendRenderedEye = [this]() {
+        if (_nvstusb && _nvstusbRenderedEye >= 0) {
+            const int eye = _nvstusbRenderedEye;
+            _nvstusbRenderedEye = -1;
+            _nvstusb->onFrameReady(eye);
+        }
+    };
+    connect(this, &QOpenGLWidget::aboutToCompose, this,
+            [this, sendRenderedEye]() {
+                if (_nvstusb && _nvstusb->beforeComposition())
+                    sendRenderedEye();
+            });
+    connect(this, &QOpenGLWidget::frameSwapped, this,
+            [this, sendRenderedEye]() {
+                if (_nvstusb && !_nvstusb->beforeComposition())
+                    sendRenderedEye();
+            });
     setMouseTracking(true);
     setMinimumSize(8, 8);
     QSize screenSize = QGuiApplication::primaryScreen()->availableSize();

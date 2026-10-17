@@ -240,6 +240,11 @@ int main(int argc, char* argv[])
             "ms", "0" });
     parser.addOption({ "nvstusb-invert",
             QCommandLineParser::tr("Invert emitter shutter eye selection.") });
+    parser.addOption({ "nvstusb-trigger",
+            QCommandLineParser::tr("USB shutter trigger: swap (default) or compose."),
+            "mode", "swap" });
+    parser.addOption({ "nvstusb-stats",
+            QCommandLineParser::tr("Print NVIDIA 3D Vision callback and USB timing stats every 5 seconds.") });
     parser.process(app);
 
     // Initialize logging
@@ -802,8 +807,16 @@ int main(int argc, char* argv[])
                 LOG_FATAL("bino: invalid --nvstusb-rate or --nvstusb-phase");
                 return 1;
             }
+            const QString triggerName = parser.value("nvstusb-trigger");
+            if (triggerName != "swap" && triggerName != "compose") {
+                LOG_FATAL("bino: --nvstusb-trigger must be swap or compose");
+                return 1;
+            }
+            const auto trigger = triggerName == "compose"
+                    ? NvstusbController::Trigger::Compose : NvstusbController::Trigger::Swap;
             if (!nvstusbController.start(parser.value("nvstusb-firmware"), rate,
-                        phaseMs, parser.isSet("nvstusb-invert"))) {
+                        phaseMs, parser.isSet("nvstusb-invert"), trigger,
+                        parser.isSet("nvstusb-stats"))) {
                 LOG_FATAL("bino: failed to initialize NVIDIA 3D Vision emitter");
                 return 1;
             }
