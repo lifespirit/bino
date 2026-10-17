@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cstdint>
 #include <ctime>
+#include <cmath>
 #include <unordered_set>
 
 #if defined(WITH_WAYLAND_PRESENTATION) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
@@ -26,6 +27,7 @@ struct PresentationTracker::Impl
         struct wp_presentation_feedback* feedback;
         int eye;
         QElapsedTimer requested;
+        uint64_t swapTimestampNs = 0;
     };
     wl_display* display = nullptr;   // borrowed from QtWayland
     wl_surface* surface = nullptr;   // borrowed from QWindow
@@ -36,6 +38,11 @@ struct PresentationTracker::Impl
     int lastEye = -1;
     bool haveSequence = false;
     uint64_t presented = 0, discarded = 0, skippedVblanks = 0, parityErrors = 0;
+    uint64_t seqZero = 0, seqValid = 0, vsynced = 0, hwClock = 0, hwCompletion = 0, zeroCopy = 0;
+    uint64_t timeMissedRefresh = 0, timeParityErrors = 0, timeUncertainGaps = 0;
+    uint64_t timeGapCycles = 0;
+    uint64_t swapToPresentSumNs = 0, swapToPresentMaxNs = 0, swapToPresentSamples = 0;
+    Sample* awaitingSwap = nullptr;
     uint64_t feedbackSamples = 0, feedbackLatencyNs = 0;
     uint64_t feedbackOverflow = 0;
     uint64_t lastPresentationNs = 0;
@@ -63,33 +70,71 @@ struct PresentationTracker::Impl
     static void output(void*, struct wp_presentation_feedback*, wl_output*) {}
     static void shown(void* data, struct wp_presentation_feedback*,
                       uint32_t timeHi, uint32_t timeLo, uint32_t nsec,
-                      uint32_t refresh, uint32_t seqHi, uint32_t seqLo, uint32_t)
+                      uint32_t refresh, uint32_t seqHi, uint32_t seqLo, uint32_t flags)
     {
         auto* sample = static_cast<Sample*>(data);
         const uint64_t seq = (uint64_t(seqHi) << 32) | seqLo;
         const uint64_t whenNs = ((uint64_t(timeHi) << 32) | timeLo) * 1000000000ull + nsec;
-        sample->owner->complete(sample, true, seq, refresh, whenNs);
+        sample->owner->complete(sample, true, seq, refresh, whenNs, flags);
     }
     static void dropped(void* data, struct wp_presentation_feedback*)
     {
         auto* sample = static_cast<Sample*>(data);
-        sample->owner->complete(sample, false, 0, 0, 0);
+        sample->owner->complete(sample, false, 0, 0, 0, 0);
     }
     void complete(Sample* sample, bool wasPresented, uint64_t sequence,
-                  uint32_t refresh, uint64_t timestampNs)
+                  uint32_t refresh, uint64_t timestampNs, uint32_t flags)
     {
         if (wasPresented) {
             ++presented;
-            lastRefreshNs = refresh;
+            if (sequence == 0)
+                ++seqZero;
+            else
+                ++seqValid;
+            if (flags & WP_PRESENTATION_FEEDBACK_KIND_VSYNC) ++vsynced;
+            if (flags & WP_PRESENTATION_FEEDBACK_KIND_HW_CLOCK) ++hwClock;
+            if (flags & WP_PRESENTATION_FEEDBACK_KIND_HW_COMPLETION) ++hwCompletion;
+            if (flags & WP_PRESENTATION_FEEDBACK_KIND_ZERO_COPY) ++zeroCopy;
+            if (refresh > 0)
+                lastRefreshNs = refresh;
             if (lastPresentationNs && timestampNs > lastPresentationNs) {
                 const uint64_t gap = timestampNs - lastPresentationNs;
                 actualPresentationGapNs += gap;
                 ++actualGapSamples;
                 if (gap > maxPresentationGapNs)
                     maxPresentationGapNs = gap;
+                // KWin may report seq=0 when the scanout MSC counter is
+                // unavailable. Infer refresh cycles from timestamps, but
+                // mark intervals that do not fit the known period as uncertain.
+                if (lastRefreshNs > 0 && lastEye >= 0) {
+                    const auto cycles = static_cast<uint64_t>(
+                            std::llround(double(gap) / double(lastRefreshNs)));
+                    const double difference = std::abs(
+                            double(gap) - double(cycles) * double(lastRefreshNs));
+                    if (cycles >= 1 && cycles < 100
+                            && difference <= double(lastRefreshNs) * 0.25) {
+                        timeGapCycles += cycles;
+                        if (cycles > 1)
+                            timeMissedRefresh += cycles - 1;
+                        if ((sample->eye ^ lastEye) != int(cycles & 1u))
+                            ++timeParityErrors;
+                    } else {
+                        ++timeUncertainGaps;
+                    }
+                }
             }
             if (timestampNs)
                 lastPresentationNs = timestampNs;
+            if (timestampNs && sample->swapTimestampNs > 0
+                    && timestampNs >= sample->swapTimestampNs) {
+                const uint64_t gap = timestampNs - sample->swapTimestampNs;
+                if (gap < 250000000ULL) {
+                    swapToPresentSumNs += gap;
+                    ++swapToPresentSamples;
+                    if (gap > swapToPresentMaxNs)
+                        swapToPresentMaxNs = gap;
+                }
+            }
             if (timestampNs && presentationClockId >= 0) {
                 timespec ts{};
                 if (clock_gettime(clockid_t(presentationClockId), &ts) == 0) {
@@ -111,9 +156,11 @@ struct PresentationTracker::Impl
             }
             if (sequence != 0) {
                 lastSequence = sequence;
-                lastEye = sample->eye;
                 haveSequence = true;
+            } else {
+                haveSequence = false;
             }
+            lastEye = sample->eye;
         } else {
             ++discarded;
         }
@@ -121,6 +168,8 @@ struct PresentationTracker::Impl
             ++feedbackSamples;
             feedbackLatencyNs += uint64_t(sample->requested.nsecsElapsed());
         }
+        if (awaitingSwap == sample)
+            awaitingSwap = nullptr;
         wp_presentation_feedback_destroy(sample->feedback);
         pending.erase(sample);
         delete sample;
@@ -128,21 +177,37 @@ struct PresentationTracker::Impl
             std::fprintf(stderr,
                     "bino: wayland-presentation stats: presented=%llu discarded=%llu "
                     "skipped_vblanks=%llu eye_parity_errors=%llu "
+                    "time_missed_refresh=%llu time_eye_parity_errors=%llu "
+                    "time_uncertain=%llu time_cycles=%llu seq_zero=%llu seq_valid=%llu "
+                    "vsynced=%llu hw_clock=%llu hw_completion=%llu zero_copy=%llu "
                     "pending=%zu feedback_overflow=%llu refresh=%.3fms "
                     "present_gap_avg=%.3fms present_gap_max=%.3fms "
+                    "swap_to_present_avg=%.3fms swap_to_present_max=%.3fms "
                     "callback_after_present_avg=%.3fms feedback_avg=%.3fms clock_id=%d\n",
                     (unsigned long long)presented,
                     (unsigned long long)discarded,
                     (unsigned long long)skippedVblanks,
                     (unsigned long long)parityErrors,
+                    (unsigned long long)timeMissedRefresh,
+                    (unsigned long long)timeParityErrors,
+                    (unsigned long long)timeUncertainGaps,
+                    (unsigned long long)timeGapCycles,
+                    (unsigned long long)seqZero, (unsigned long long)seqValid,
+                    (unsigned long long)vsynced, (unsigned long long)hwClock,
+                    (unsigned long long)hwCompletion, (unsigned long long)zeroCopy,
                     pending.size(), (unsigned long long)feedbackOverflow,
                     double(lastRefreshNs) / 1e6,
                     actualGapSamples ? double(actualPresentationGapNs) / actualGapSamples / 1e6 : 0.,
                     double(maxPresentationGapNs) / 1e6,
+                    swapToPresentSamples ? double(swapToPresentSumNs) / swapToPresentSamples / 1e6 : 0.,
+                    double(swapToPresentMaxNs) / 1e6,
                     callbackLagSamples ? double(callbackAfterPresentNs) / callbackLagSamples / 1e6 : 0.,
                     feedbackSamples ? double(feedbackLatencyNs) / feedbackSamples / 1e6 : 0.,
                     presentationClockId);
             presented = discarded = skippedVblanks = parityErrors = 0;
+            seqZero = seqValid = vsynced = hwClock = hwCompletion = zeroCopy = 0;
+            timeMissedRefresh = timeParityErrors = timeUncertainGaps = timeGapCycles = 0;
+            swapToPresentSumNs = swapToPresentMaxNs = swapToPresentSamples = 0;
             feedbackSamples = feedbackLatencyNs = 0;
             feedbackOverflow = 0;
             actualPresentationGapNs = maxPresentationGapNs = 0;
@@ -191,13 +256,27 @@ struct PresentationTracker::Impl
         auto* feedback = wp_presentation_feedback(presentation, surface);
         if (!feedback)
             return;
-        auto* sample = new Sample{this, feedback, eye, QElapsedTimer{}};
+        auto* sample = new Sample{this, feedback, eye, QElapsedTimer{}, 0};
         sample->requested.start();
         pending.insert(sample);
+        awaitingSwap = sample;
         static const wp_presentation_feedback_listener listener{
             &Impl::output, &Impl::shown, &Impl::dropped
         };
         wp_presentation_feedback_add_listener(feedback, &listener, sample);
+    }
+    void noteSwapped()
+    {
+        if (!awaitingSwap)
+            return;
+        if (presentationClockId >= 0) {
+            timespec ts{};
+            if (clock_gettime(clockid_t(presentationClockId), &ts) == 0) {
+                awaitingSwap->swapTimestampNs =
+                    uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
+            }
+        }
+        awaitingSwap = nullptr;
     }
     ~Impl()
     {
@@ -241,6 +320,13 @@ void PresentationTracker::beforeSwap(int eye)
         _impl->record(eye);
 #else
     Q_UNUSED(eye);
+#endif
+}
+void PresentationTracker::afterSwap()
+{
+#if defined(WITH_WAYLAND_PRESENTATION) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
+    if (_impl)
+        _impl->noteSwapped();
 #endif
 }
 bool PresentationTracker::enabled() const
