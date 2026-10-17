@@ -845,6 +845,10 @@ int main(int argc, char* argv[])
                 LOG_FATAL("bino: --nvstusb-native-window requires --nvstusb, --output=alternating, --fullscreen");
                 return 1;
             }
+            if (parser.value("nvstusb-trigger") != "swap") {
+                LOG_FATAL("bino: --nvstusb-native-window currently supports only --nvstusb-trigger=swap");
+                return 1;
+            }
             std::fprintf(stderr,
                     "bino: nvstusb: EXPERIMENTAL native QOpenGLWindow fullscreen path "
                     "(direct EGL, no QWidget compositing; Qt swap != physical presentation)\n");
