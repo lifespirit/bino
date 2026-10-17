@@ -58,7 +58,17 @@ Widget::Widget(OutputMode outputMode, float surroundVerticalFOV,
 {
     setSurroundVerticalFieldOfView(surroundVerticalFOV);
     _surroundVerticalFOVDefault = _surroundVerticalFOV; // to make sure clamping was applied
-    setUpdateBehavior(QOpenGLWidget::PartialUpdate);
+    // Stereo shutter playback repaints the entire quad every refresh.
+    // Let Qt invalidate the FBO after each frame when explicitly requested,
+    // avoiding preservation work that may delay the next 120 Hz refresh.
+    // Opt-in until timing and visual correctness are verified on Wayland.
+    const bool noPartialUpdate = _nvstusb && _outputMode == Output_Alternating
+            && qEnvironmentVariableIntValue("BINO_STEREO_NO_PARTIAL_UPDATE") != 0;
+    setUpdateBehavior(noPartialUpdate
+            ? QOpenGLWidget::NoPartialUpdate : QOpenGLWidget::PartialUpdate);
+    if (noPartialUpdate)
+        std::fprintf(stderr,
+                "bino: nvstusb: experimental QOpenGLWidget::NoPartialUpdate enabled\n");
     // Notify once per newly painted eye, never reuse the previous eye when Qt
     // emits another composition signal without a fresh paintGL().
     auto sendRenderedEye = [this]() {
