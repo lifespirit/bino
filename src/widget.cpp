@@ -89,7 +89,17 @@ Widget::Widget(OutputMode outputMode, float surroundVerticalFOV,
     QSize screenSize = QGuiApplication::primaryScreen()->availableSize();
     QSize maxSize = 0.75f * screenSize;
     _sizeHint = SizeBase.scaled(maxSize, Qt::KeepAspectRatio);
-    connect(Bino::instance(), &Bino::newVideoFrame, [=]() { update(); });
+    // Normally decoded frames ask Qt to repaint immediately. For the
+    // diagnostic mode, a running alternating loop requests its own next
+    // paintGL() every frame; avoid mixing the decoder's 24 fps wakeups with
+    // the 120 Hz display-paced update requests.
+    connect(Bino::instance(), &Bino::newVideoFrame, this, [this]() {
+        if (_nvstusb && _nvstusb->ignoreVideoWakeups()
+                && _outputMode == Output_Alternating
+                && _nvstusbAlternatingActive)
+            return;
+        update();
+    });
     connect(Bino::instance(), &Bino::toggleFullscreen, [=]() { emit toggleFullscreen(); });
     connect(Playlist::instance(), SIGNAL(mediaChanged(PlaylistEntry)), this, SLOT(mediaChanged(PlaylistEntry)));
     _updateTimer.setSingleShot(true);
@@ -111,6 +121,7 @@ OutputMode Widget::outputMode() const
 void Widget::setOutputMode(enum OutputMode mode)
 {
     _nvstusbRenderedEye = -1;
+    _nvstusbAlternatingActive = false;
     _outputMode = mode;
 }
 
@@ -291,6 +302,9 @@ void Widget::paintGL()
 
     // Adjust the stereo mode if necessary
     bool frameIsStereo = (viewCount == 2);
+    // Once a stereo paint is running, paintGL() schedules the next one
+    // below. Re-enable decoder wakeups when stereo playback stops.
+    _nvstusbAlternatingActive = (_outputMode == Output_Alternating && frameIsStereo);
     OutputMode outputMode = _outputMode;
     if (!frameIsStereo)
         outputMode = Output_Left;
@@ -610,6 +624,7 @@ void Widget::wheelEvent(QWheelEvent* e)
 
 void Widget::mediaChanged(PlaylistEntry)
 {
+    _nvstusbAlternatingActive = false;
     _inSurroundMovement = false;
     _surroundHorizontalAngleBase = 0.0f;
     _surroundVerticalAngleBase = 0.0f;
