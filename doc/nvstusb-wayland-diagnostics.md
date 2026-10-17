@@ -509,6 +509,10 @@ containing:
 - `eye_parity_errors`: changes of eye inconsistent with presentation
   sequence parity across successive *presented* movie frames
 - `refresh`: compositor reported refresh period (not app scheduling)
+- `present_gap_avg/max`: measured time between actual presentation
+  timestamps from KWin, including refreshes skipped by this surface
+- `callback_after_present_avg`: time from compositor-reported presentation
+  to delivery of the feedback callback (when the specified clock is usable)
 - `feedback_avg`: delivery latency from feedback request to callback
   (not the actual presentation latency)
 - `pending` and `feedback_overflow`: outstanding responses/diagnostics.
