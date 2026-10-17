@@ -591,9 +591,12 @@ reported as `time_cycles`.
 
 The new `swap_to_present_avg/max` measures delay between Qt
 `frameSwapped` and KWin's physical presentation timestamp *for
-the same submitted eye frame*. This is critical to measuring
-whether shutter commands from Qt swap callbacks are sent too
-early relative to corresponding physical images.
+the same submitted eye frame*. `swap_after_present` counts cases
+where the Qt signal came **after** the compositor-reported
+presentation instant rather than hiding them as negative delays.
+This is critical to measuring whether shutter commands from Qt
+swap callbacks are sent too early relative to corresponding
+physical images.
 
 The USB controller and eye-selection behavior have not changed;
 these additional metrics must be validated in another
