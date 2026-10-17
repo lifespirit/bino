@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <ctime>
 #include <cmath>
+#include <array>
+#include <cstdlib>
 #include <unordered_set>
 
 #if defined(WITH_WAYLAND_PRESENTATION) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
@@ -28,6 +30,11 @@ struct PresentationTracker::Impl
         int eye;
         QElapsedTimer requested;
         uint64_t swapTimestampNs = 0;
+        // Snapshot the last confirmed presentation at submission time.
+        // Never derive a prediction using knowledge from the future.
+        uint64_t forecastAnchorNs = 0;
+        uint64_t forecastRequestNs = 0;
+        uint32_t forecastRefreshNs = 0;
     };
     wl_display* display = nullptr;   // borrowed from QtWayland
     wl_surface* surface = nullptr;   // borrowed from QWindow
@@ -43,6 +50,14 @@ struct PresentationTracker::Impl
     uint64_t timeGapCycles = 0;
     uint64_t swapToPresentSumNs = 0, swapToPresentMaxNs = 0, swapToPresentSamples = 0;
     uint64_t swapAfterPresent = 0;
+    // Dry-run observation only: candidate EGL-to-scanout delays, in ms.
+    // Metrics compare predicted presentation *slot* against the actual
+    // compositor timestamp. No rendered eye or USB command is modified.
+    static constexpr std::array<uint64_t, 6> forecastLeadMs{{8, 12, 16, 20, 24, 32}};
+    std::array<uint64_t, 6> forecastTotal{};
+    std::array<uint64_t, 6> forecastParityMatch{};
+    std::array<uint64_t, 6> forecastExactSlot{};
+    std::array<uint64_t, 6> forecastAbsSlotError{};
     Sample* awaitingSwap = nullptr;
     uint64_t feedbackSamples = 0, feedbackLatencyNs = 0;
     uint64_t feedbackOverflow = 0;
@@ -126,6 +141,35 @@ struct PresentationTracker::Impl
             }
             if (timestampNs)
                 lastPresentationNs = timestampNs;
+            // Score predictions made BEFORE submitting this exact buffer.
+            // timestamp-based parity is meaningful even though KWin's
+            // wp_presentation seq is zero on the tested AMD/KWin setup.
+            if (sample->forecastAnchorNs && sample->forecastRequestNs
+                    && sample->forecastRefreshNs > 0
+                    && timestampNs > sample->forecastAnchorNs
+                    && timestampNs - sample->forecastAnchorNs < 250000000ULL) {
+                const double period = double(sample->forecastRefreshNs);
+                const auto actualSlot = std::llround(
+                        double(timestampNs - sample->forecastAnchorNs) / period);
+                for (size_t i = 0; i < forecastLeadMs.size(); ++i) {
+                    const uint64_t predictedNs = sample->forecastRequestNs
+                            + forecastLeadMs[i] * 1000000ULL;
+                    if (predictedNs <= sample->forecastAnchorNs)
+                        continue;
+                    const auto predictedSlot = std::llround(
+                            double(predictedNs - sample->forecastAnchorNs) / period);
+                    if (predictedSlot < 1 || predictedSlot >= 100
+                            || actualSlot < 1 || actualSlot >= 100)
+                        continue;
+                    ++forecastTotal[i];
+                    if ((predictedSlot & 1LL) == (actualSlot & 1LL))
+                        ++forecastParityMatch[i];
+                    if (predictedSlot == actualSlot)
+                        ++forecastExactSlot[i];
+                    forecastAbsSlotError[i] += static_cast<uint64_t>(
+                            std::llabs(predictedSlot - actualSlot));
+                }
+            }
             if (timestampNs && sample->swapTimestampNs > 0) {
                 if (timestampNs >= sample->swapTimestampNs) {
                     const uint64_t gap = timestampNs - sample->swapTimestampNs;
@@ -211,6 +255,22 @@ struct PresentationTracker::Impl
                     callbackLagSamples ? double(callbackAfterPresentNs) / callbackLagSamples / 1e6 : 0.,
                     feedbackSamples ? double(feedbackLatencyNs) / feedbackSamples / 1e6 : 0.,
                     presentationClockId);
+            for (size_t i = 0; i < forecastLeadMs.size(); ++i) {
+                const double denominator = double(forecastTotal[i]);
+                std::fprintf(stderr,
+                        "bino: wayland-forecast: lead=%llums samples=%llu "
+                        "parity_ok=%llu parity_ok_pct=%.2f exact_slot=%llu "
+                        "exact_pct=%.2f abs_slot_err_avg=%.3f\n",
+                        (unsigned long long)forecastLeadMs[i],
+                        (unsigned long long)forecastTotal[i],
+                        (unsigned long long)forecastParityMatch[i],
+                        denominator ? 100.0 * forecastParityMatch[i] / denominator : 0.0,
+                        (unsigned long long)forecastExactSlot[i],
+                        denominator ? 100.0 * forecastExactSlot[i] / denominator : 0.0,
+                        denominator ? double(forecastAbsSlotError[i]) / denominator : 0.0);
+                forecastTotal[i] = forecastParityMatch[i] = forecastExactSlot[i] = 0;
+                forecastAbsSlotError[i] = 0;
+            }
             presented = discarded = skippedVblanks = parityErrors = 0;
             seqZero = seqValid = vsynced = hwClock = hwCompletion = zeroCopy = 0;
             timeMissedRefresh = timeParityErrors = timeUncertainGaps = timeGapCycles = 0;
@@ -266,6 +326,20 @@ struct PresentationTracker::Impl
             return;
         auto* sample = new Sample{this, feedback, eye, QElapsedTimer{}, 0};
         sample->requested.start();
+        if (presentationClockId >= 0 && lastPresentationNs && lastRefreshNs) {
+            timespec ts{};
+            if (clock_gettime(clockid_t(presentationClockId), &ts) == 0) {
+                sample->forecastRequestNs =
+                    uint64_t(ts.tv_sec) * 1000000000ULL + uint64_t(ts.tv_nsec);
+                // An anchor older than 250ms cannot reliably predict the
+                // next presentation when a window is hidden/stalled.
+                if (sample->forecastRequestNs >= lastPresentationNs &&
+                        sample->forecastRequestNs - lastPresentationNs < 250000000ULL) {
+                    sample->forecastAnchorNs = lastPresentationNs;
+                    sample->forecastRefreshNs = lastRefreshNs;
+                }
+            }
+        }
         pending.insert(sample);
         awaitingSwap = sample;
         static const wp_presentation_feedback_listener listener{
