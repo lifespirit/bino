@@ -61,6 +61,11 @@ private:
     int _replacedCommands = 0;
     int _lastEye = -1;
     int _sameEyeCount = 0;
+    // Time between alternating shutter requests, split by direction.
+    qint64 _gapToEyeNs[2] = {0, 0};
+    qint64 _gapToEyeMaxNs[2] = {0, 0};
+    int _gapToEyeCount[2] = {0, 0};
+    qint64 _usbByEyeMaxNs[2] = {0, 0};
 
     // Counts are observed Qt events, not compositor presentation feedback.
     int _paintCount = 0;
